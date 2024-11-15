@@ -1,0 +1,1079 @@
+---
+title: "IE582 HW1"
+author: "Ahmet Çeliker"
+date: "2024-10-26"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(readr)
+library(GGally)
+library(pls)
+library(dplyr)
+library(ggfortify)
+library(gridExtra)
+library(carData)
+library(car)
+library(corrplot)
+library(factoextra)
+library(caret)
+library(parallelly)
+library(future)
+library(future.apply)
+library(GGally)
+library(kernlab)
+library(umap)
+```
+
+```{r}
+input_data <- read_csv("hw1_input.csv")
+real_data <- read_csv("hw1_real.csv")
+img_data <- read_csv("hw1_img.csv")
+```
+```{r}
+# I checked for missing values
+sum(is.na(input_data))
+sum(is.na(real_data))
+sum(is.na(img_data))
+```
+
+
+```{r}
+summary(input_data)
+```
+```{r}
+head(input_data)
+```
+```{r}
+summary(real_data)
+summary(img_data)
+```
+```{r}
+# I defined the acceptable range for each parameter
+ranges <- list(
+  "Patch Length (L)" = c(1.8, 5.2),
+  "Patch Width (W)" = c(1.8, 5.2),
+  "Probe radius" = c(0.015, 0.05),
+  "Metal thickness (h_conductor)" = c(0.01, 0.04),
+  "Substrate thickness (h_sub)" = c(0.1, 0.8),
+  "Solder resist thickness (h_sr)" = c(0.02, 0.1),
+  "Pad-probe radius difference" = c(0, 0.025),
+  "Anti-pad-pad radius difference" = c(0.025, 0.1),
+  "Probe position/patch length ratio" = c(0.05, 0.45),
+  "Substrate dielectric constant" = c(2, 5),
+  "Solder resist dielectric constant" = c(2, 5)
+)
+
+# I checked if any data in the columns are out of range
+check_out_of_range <- function(data, ranges) {
+  out_of_range_flags <- sapply(names(ranges), function(col) {
+    range <- ranges[[col]]
+    if (col %in% colnames(data)) {
+      any(data[[col]] < range[1] | data[[col]] > range[2])
+    } else {
+      NA  # Column not found
+    }
+  })
+  return(out_of_range_flags)
+}
+
+
+out_of_range <- check_out_of_range(input_data, ranges)
+
+
+if (any(out_of_range, na.rm = TRUE)) {
+  cat("There are out-of-range values in the input dataset:\n")
+  print(names(out_of_range)[out_of_range])
+} else {
+  cat("All values in the input dataset are within the specified ranges.\n")
+}
+```
+
+```{r}
+cor_matrix <- cor(input_data)
+print(cor_matrix)
+ggcorrplot::ggcorrplot(cor_matrix, method = "circle", type = "lower",
+                       title = "Correlation Matrix of Design Parameters")
+```
+
+```{r}
+ggpairs(input_data, 
+        lower = list(continuous = wrap("smooth", method = "loess", color = "red")),  # Loess fit line in red
+        diag = list(continuous = "densityDiag"),  # Density plots on the diagonal
+        title = "Scatter Plot Matrix with Loess Smoothing")
+
+```
+```{r}
+# I applied scatter plot matrix with linear fit lines
+ggpairs(input_data, 
+        lower = list(continuous = wrap("smooth", method = "lm", color = "blue")),  # Linear fit line in blue
+        diag = list(continuous = "densityDiag"),  # Density plots on the diagonal
+        title = "Scatter Plot Matrix with Linear Fit Lines")
+
+```
+
+
+```{r}
+
+cor_matrix <- cor(input_data)
+
+
+cor_upper <- as.data.frame(as.table(cor_matrix))
+cor_upper <- cor_upper[cor_upper$Var1 != cor_upper$Var2, ]  
+
+
+cor_sorted <- cor_upper[order(-abs(cor_upper$Freq)), ]
+
+
+top_5_results <- head(cor_sorted, 5)
+
+
+print(top_5_results)
+
+```
+
+
+```{r}
+pca_input2 <- prcomp(input_data, center = TRUE, scale. = TRUE) #It uses Singular Value Decomposition (SVD), which is generally more numerically stable and preferred.
+pca_input <- princomp(input_data, cor = TRUE) # It uses the eigen decomposition of the covariance matrix. This method can have less numerical stability, especially with high-dimensional datasets.
+```
+
+
+```{r}
+print(pca_input2)
+summary(pca_input2)
+```
+
+```{r}
+summary(pca_input, loadings = TRUE)
+loadings(pca_input)
+
+```
+```{r}
+eig.val2<-get_eigenvalue(pca_input2)
+eig.val2
+```
+```{r}
+eig.val<-get_eigenvalue(pca_input)
+eig.val
+```
+
+
+```{r}
+fviz_eig(pca_input, col.var="blue")
+```
+
+
+```{r}
+var_explained <- pca_input$sdev^2 / sum(pca_input$sdev^2)
+plot(var_explained, type = "b", xlab = "Principal Component",
+     ylab = "Proportion of Variance Explained",
+     main = "Variance Explained by Each Principal Component")
+
+```
+```{r}
+var <- get_pca_var(pca_input)
+var
+```
+```{r}
+var$cos2
+
+```
+```{r}
+corrplot(var$cos2, is.corr=FALSE)
+```
+
+
+```{r}
+fviz_cos2(pca_input, choice = "var", axes = 1:6)
+```
+```{r}
+fviz_pca_var(pca_input,
+             col.var = "cos2", # Color by the quality of representation
+             gradient.cols = c("darkorchid4", "gold", "darkorange"),
+             repel = TRUE
+             )
+```
+```{r}
+# Contributions of variables to PC1
+a<-fviz_contrib(pca_input2, choice = "var", axes = 1)
+# Contributions of variables to PC2
+b<-fviz_contrib(pca_input2, choice = "var", axes = 2)
+# Contributions of variables to PC2
+c<-fviz_contrib(pca_input2, choice = "var", axes = 3)
+# Contributions of variables to PC2
+d<-fviz_contrib(pca_input2, choice = "var", axes = 4)
+# Contributions of variables to PC2
+e<-fviz_contrib(pca_input2, choice = "var", axes = 5)
+f<-fviz_contrib(pca_input2, choice = "var", axes = 6)
+grid.arrange(a,b,c,d,e,f, ncol=6, top='Contribution of the variables to the first six PCs')
+```
+```{r}
+var$contrib
+
+```
+```{r}
+corrplot(var$contrib, is.corr = FALSE)
+```
+
+
+
+```{r}
+fviz_pca_ind(pca_input,
+             col.ind = "cos2", 
+             gradient.cols = c("darkorchid4", "gold", "darkorange"),
+             repel = TRUE
+             )
+```
+```{r}
+# Total contribution on PC1 and PC2
+fviz_contrib(pca_input, choice = "ind", axes = 1:6)
+```
+
+
+```{r}
+pca_data <- as.data.frame(pca_input$scores)
+ggplot(pca_data, aes(x = Comp.1, y = Comp.2)) +
+  geom_point() +
+  labs(title = "PCA of Design Parameters",
+       x = "Principal Component 1",
+       y = "Principal Component 2")
+```
+```{r}
+biplot(pca_input, scale = 0)
+```
+```{r}
+real_s11 <- real_data[, 75]
+img_s11 <- img_data[, 75]
+```
+
+```{r}
+print(real_data)
+print(input_data)
+print(real_s11)
+```
+```{r}
+print(pca_input)
+```
+
+```{r}
+pca_scores <- as_tibble(pca_input$scores)
+
+pca_scores <- pca_scores %>%
+  mutate(Real_S11 = real_s11, Img_S11 = img_s11)
+```
+
+```{r}
+pca_scores <- pca_scores %>%
+  mutate(Real_S11 = unlist(real_s11), Img_S11 = unlist(img_s11))
+```
+
+
+```{r}
+
+print(pca_scores)
+
+```
+
+```{r}
+# I plotted PC1 vs Real_S11
+real_plot <- ggplot(pca_scores, aes(x = Comp.1, y = Real_S11)) +
+  geom_point(color = "blue") +
+  labs(title = "PC1 vs Real Part of S11 at Frequency 75",
+       x = "Principal Component 1 (PC1)",
+       y = "Real Part of S11") +
+  theme_minimal()
+print(real_plot)
+```
+```{r}
+head(cor(real_data, img_data, use = "complete.obs"))
+```
+```{r}
+s11_data <- data.frame(
+  real_data,
+  img_data
+)
+```
+```{r}
+colnames(s11_data) <- c(
+  paste0("Real_", 1:ncol(real_data)),
+  paste0("Imaginary_", 1:ncol(img_data))
+)
+
+```
+
+
+```{r}
+s11_data_75 <- data.frame(
+  Real = real_data[[75]],     
+  Imaginary = img_data[[75]]  
+)
+s11_data_75 <- as_tibble(s11_data_75)
+ggplot(s11_data_75, aes(x = Real, y = Imaginary)) +
+  geom_point(color = "blue", alpha = 0.6) +
+  geom_smooth(method = "lm", color = "red", se = FALSE) + # Adds a linear trend line
+  labs(title = "Relationship Between Real and Imaginary Parts of S11 at Frequency 75",
+       x = "Real Part of S11",
+       y = "Imaginary Part of S11") +
+  theme_minimal()
+```
+```{r}
+print(s11_data_75)
+print(input_data)
+```
+
+```{r}
+analysis_data_75 <- bind_cols(input_data, s11_data_75)
+print(analysis_data_75)
+```
+```{r}
+input_data <- as.data.frame(input_data)
+analysis_data_75 <- as.data.frame(analysis_data_75)
+input_data <- as_tibble(input_data)
+analysis_data_75 <- as_tibble(analysis_data_75)
+```
+
+
+```{r}
+
+
+for (feature in colnames(input_data)) {
+  
+  feature_escaped <- paste0("`", feature, "`")
+  
+  # I plotted feature vs Real part at 75th frequency
+  p_real <- ggplot(analysis_data_75, aes_string(x = feature_escaped, y = "`Real`")) +
+    geom_point(color = "blue", alpha = 0.6) +
+    geom_smooth(method = "lm", color = "red", se = FALSE) +
+    labs(title = paste("Relationship Between", feature, "and Real Part (75th Frequency)"),
+         x = feature, y = "Real Part of S11 (75th Frequency)") +
+    theme_minimal()
+
+  # I plotted feature vs Imaginary part at 75th frequency
+  p_imaginary <- ggplot(analysis_data_75, aes_string(x = feature_escaped, y = "`Imaginary`")) +
+    geom_point(color = "purple", alpha = 0.6) +
+    geom_smooth(method = "lm", color = "orange", se = FALSE) +
+    labs(title = paste("Relationship Between", feature, "and Imaginary Part (75th Frequency)"),
+         x = feature, y = "Imaginary Part of S11 (75th Frequency)") +
+    theme_minimal()
+
+  
+  print(p_real)
+  print(p_imaginary)
+}
+
+
+```
+```{r}
+for (feature in colnames(input_data)) {
+  
+  feature_escaped <- paste0("`", feature, "`")
+  
+  # I plotted feature vs Real part at 75th frequency with LOESS smoothing
+  p_real <- ggplot(analysis_data_75, aes_string(x = feature_escaped, y = "`Real`")) +
+    geom_point(color = "blue", alpha = 0.6) +
+    geom_smooth(method = "loess", color = "red", se = FALSE) +
+    labs(title = paste("Non-linear Relationship Between", feature, "and Real Part (75th Frequency)"),
+         x = feature, y = "Real Part of S11 (75th Frequency)") +
+    theme_minimal()
+
+  # I plotted feature vs Imaginary part at 75th frequency with LOESS smoothing
+  p_imaginary <- ggplot(analysis_data_75, aes_string(x = feature_escaped, y = "`Imaginary`")) +
+    geom_point(color = "purple", alpha = 0.6) +
+    geom_smooth(method = "loess", color = "orange", se = FALSE) +
+    labs(title = paste("Non-linear Relationship Between", feature, "and Imaginary Part (75th Frequency)"),
+         x = feature, y = "Imaginary Part of S11 (75th Frequency)") +
+    theme_minimal()
+
+  
+  print(p_real)
+  print(p_imaginary)
+}
+
+```
+
+
+```{r}
+pc_data_pcr <- as.data.frame(pca_input$scores[, 1:6]) #with covariance matrix
+pc_data_pcr2 <- as.data.frame(pca_input2$x[, 1:6]) #with SVD
+
+```
+
+```{r}
+s11_magnitude <- sqrt(real_data^2 + img_data^2)
+s11_magnitude_sample <- s11_magnitude[1:6, ]
+s11_magnitude_sample <- as.data.frame(t(s11_magnitude_sample))
+colnames(s11_magnitude_sample) <- paste("Design", 1:6, sep = "_")
+```
+
+```{r}
+s11_magnitude_sample <- s11_magnitude_sample %>%
+  mutate(Frequency = 1:n())
+
+s11_magnitude_sample_long <- pivot_longer(s11_magnitude_sample, 
+                                          cols = starts_with("Design"),
+                                          names_to = "Design",
+                                          values_to = "Magnitude")
+
+ggplot(s11_magnitude_sample_long, aes(x = Frequency, y = Magnitude, color = Design)) +
+  geom_line() +
+  labs(title = "S11 Magnitude Profiles for First 6 Designs",
+       x = "Frequency Index",
+       y = "Magnitude") +
+  theme_minimal()
+```
+
+```{r}
+mean_s11_magnitude <- colMeans(s11_magnitude)
+local_minima <- which(diff(sign(diff(mean_s11_magnitude))) == 2) + 1 
+plot(mean_s11_magnitude, type = "l", col = "blue", xlab = "Frequency Index", ylab = "Mean S11 Magnitude",
+     main = "Mean S11 Magnitude Across Frequencies")
+points(local_minima, mean_s11_magnitude[local_minima], col = "red", pch = 19)  # Mark local minima
+```
+```{r}
+
+key_freq_indices <- head(sort(local_minima[order(mean_s11_magnitude[local_minima])]), 7)
+print(key_freq_indices)
+cat("Key Frequency Indices (Resonance Points):", key_freq_indices, "\n")
+
+
+```
+
+```{r}
+
+selected_parameters <- input_data %>%
+  select(`length of patch`,`width of patch`, `height of patch`,`height of solder resist layer`, `radius of the probe`,`c_pad`, `c_probe`, `c_antipad`,`dielectric constant of substrate`,`dielectric constant of solder resist layer`)
+
+```
+
+```{r}
+cat("Regression Results for Real Part of S11\n")
+for (i in key_freq_indices) {
+  # I created a new data frame with selected parameters and the target real S11 column at frequency index i
+  data_real <- bind_cols(selected_parameters, target = real_data[[i]])
+  
+  # I defined the formula and run linear regression
+  lm_model_real <- lm(target ~ ., data = data_real)
+  cat("\nFrequency Index:", i, "\n")
+  print(summary(lm_model_real))  
+}
+
+# Step 2: Linear regression for imaginary parts at each selected frequency index
+cat("\nRegression Results for Imaginary Part of S11\n")
+for (i in key_freq_indices) {
+  # I created a new data frame with selected parameters and the target imaginary S11 column at frequency index i
+  data_img <- bind_cols(selected_parameters, target = img_data[[i]])
+  
+  # I defined the formula and run linear regression
+  lm_model_img <- lm(target ~ ., data = data_img)
+  cat("\nFrequency Index:", i, "\n")
+  print(summary(lm_model_img))  
+}
+```
+
+```{r}
+selected_parameters2 <- input_data %>%
+  select(`length of patch`,`height of substrate`, `height of patch`,`height of solder resist layer`, `radius of the probe`,`c_pad`, `c_probe`, `c_antipad`,`dielectric constant of substrate`,`dielectric constant of solder resist layer`)
+
+cat("Regression Results for Real Part of S11\n")
+for (i in key_freq_indices) {
+  
+  data_real <- bind_cols(selected_parameters2, target = real_data[[i]])
+  
+  lm_model_real <- lm(target ~ ., data = data_real)
+  cat("\nFrequency Index:", i, "\n")
+  print(summary(lm_model_real))  
+}
+
+# Step 2: Linear regression for imaginary parts at each selected frequency index
+cat("\nRegression Results for Imaginary Part of S11\n")
+for (i in key_freq_indices) {
+  # I created a new data frame with selected parameters and the target imaginary S11 column at frequency index i
+  data_img <- bind_cols(selected_parameters2, target = img_data[[i]])
+  
+  lm_model_img <- lm(target ~ ., data = data_img)
+  cat("\nFrequency Index:", i, "\n")
+  print(summary(lm_model_img))  
+}
+```
+
+
+```{r}
+cat("Linear Regression Model Using the Principal Components for Real Part of S11\n")
+for (i in key_freq_indices) {
+  # I prepared data for regression
+  data_real_pcr <- bind_cols(pc_data_pcr, target = real_data[[i]])
+  
+  # I fitted the Linear Regression model using the top 6 principal components
+  linearpc_model_real <- lm(target ~ ., data = data_real_pcr)
+  
+  cat("\nFrequency Index:", i, "\n")
+  print(summary(linearpc_model_real))  
+}
+```
+```{r}
+cat("Linear Regression Model Using the Principal Components for Real Part of S11\n")
+for (i in key_freq_indices) {
+  data_real_pcr <- bind_cols(pc_data_pcr, target = real_data[[i]])
+  
+  linearpc_model_real <- lm(target ~ ., data = data_real_pcr)
+  
+  cat("\nFrequency Index:", i, "\n")
+  print(summary(linearpc_model_real)) 
+  
+  # I scattered plots for each principal component vs target
+  for (j in 1:6) {  
+    pc_name <- paste("Comp.", j, sep = "")
+    
+    plot <- ggplot(data_real_pcr, aes_string(x = pc_name, y = "target")) +
+      geom_point() +
+      geom_smooth(method = "loess", color = "orange", se = FALSE)+
+      labs(
+        title = paste("Scatter Plot of", pc_name, "vs Real Part of S11 at Frequency Index", i),
+        x = pc_name,
+        y = "Real Part of S11"
+      ) +
+      theme_minimal()
+    
+    print(plot)
+  }
+}
+```
+
+```{r}
+cat("Principal Component Relationships with Real and Imaginary Parts of S11\n")
+for (i in key_freq_indices) {
+  # I prepared data for the selected frequency index
+  data_combined <- bind_cols(
+    pc_data_pcr,
+    real_part = real_data[[i]],
+    imaginary_part = img_data[[i]]
+  )
+  
+  # For each principal component, I created a combined scatter plot
+  for (j in 1:6) {  
+    pc_name <- paste("Comp.", j, sep = "")
+    
+    plot <- ggplot(data_combined, aes_string(x = pc_name)) +
+      geom_point(aes(y = real_part), color = "blue", alpha = 0.7) +
+      geom_smooth(aes(y = real_part), color = "blue", method = "loess", se = FALSE) +
+      geom_point(aes(y = imaginary_part), color = "red", alpha = 0.7) +
+      geom_smooth(aes(y = imaginary_part), color = "red", method = "loess", se = FALSE) +
+      labs(
+        title = paste("Scatter Plot of", pc_name, "vs Real and Imaginary Parts of S11 at Frequency Index", i),
+        x = pc_name,
+        y = "S11 Value"
+      ) +
+      theme_minimal() +
+      scale_color_manual(values = c("blue" = "Real Part", "red" = "Imaginary Part"))
+    
+    print(plot)
+  }
+}
+```
+
+
+```{r}
+cat("\nPrincipal Component Regression for Imaginary Part of S11\n")
+for (i in key_freq_indices) {
+  
+  data_img_pcr <- bind_cols(pc_data_pcr, target = img_data[[i]])
+  
+  # I fitted the Linear Regression model using the top 6 principal components
+  linearpc_model_img <- lm(target ~ ., data = data_img_pcr)
+  
+  cat("\nFrequency Index:", i, "\n")
+  print(summary(linearpc_model_img))
+}
+```
+
+
+```{r}
+pc_data_pcr_all <- as.data.frame(pca_input$scores[, 1:11]) #with covariance matrix
+```
+
+```{r}
+cat("Principal Component Regression for Real Part of S11\n")
+for (i in key_freq_indices) {
+
+  data_real_pcr <- bind_cols(pc_data_pcr_all, target = real_data[[i]])
+  
+  pcr_model_real <- pcr(target ~ ., data = data_real_pcr, scale = TRUE, validation = "CV")
+  
+  cat("\nFrequency Index:", i, "\n")
+  print(summary(pcr_model_real))  
+  optimal_components <- which.min(pcr_model_real$validation$PRESS) # I found the number of components with minimum RMSEP
+  cat("Optimal number of components selected:", optimal_components, "\n")
+}
+```
+```{r}
+cat("Principal Component Regression for Imaginary Part of S11\n")
+for (i in key_freq_indices) {
+  
+  data_img_pcr <- bind_cols(pc_data_pcr_all, target = img_data[[i]])
+  
+  
+  pcr_model_img <- pcr(target ~ ., data = data_img_pcr, scale = TRUE, validation = "CV")
+  
+  
+  cat("\nFrequency Index:", i, "\n")
+  print(summary(pcr_model_img))  
+  optimal_components <- which.min(pcr_model_img$validation$PRESS)
+  cat("Optimal number of components selected:", optimal_components, "\n")
+}
+```
+
+
+```{r}
+cat("Principal Component Regression for Real Part of S11\n")
+for (i in key_freq_indices) {
+  
+  data_real_pcr <- bind_cols(pc_data_pcr, target = real_data[[i]])
+  
+  pcr_model_real <- pcr(target ~ ., data = data_real_pcr, scale = TRUE, validation = "CV")
+  
+  cat("\nFrequency Index:", i, "\n")
+  print(summary(pcr_model_real))
+}
+
+```
+```{r}
+pc_data_pcr_4 <- as.data.frame(pca_input$scores[, 1:4]) #with covariance matrix
+```
+
+
+```{r}
+cat("\nPrincipal Component Regression for Imaginary Part of S11\n")
+for (i in key_freq_indices) {
+  
+  data_img_pcr <- bind_cols(pc_data_pcr, target = img_data[[i]])
+  
+  
+  pcr_model_img <- pcr(target ~ ., data = data_img_pcr, scale = TRUE, validation = "CV")
+  
+  
+  cat("\nFrequency Index:", i, "\n")
+  print(summary(pcr_model_img))  
+}
+```
+
+
+
+```{r}
+# I set up cross-validation control
+cv_control <- trainControl(method = "cv", number = 10)  # 10-fold cross-validation
+
+cat("Cross-Validation Results of Linear Regression Model (Real Part of S11)\n")
+for (i in key_freq_indices) {
+ 
+  data_real <- bind_cols(selected_parameters, target = real_data[[i]])
+  
+  # I fitted the model with cross-validation
+  lm_model_real <- train(
+    target ~ .,
+    data = data_real,
+    method = "lm",
+    trControl = cv_control
+  )
+  
+
+  cat("\nFrequency Index:", i, "\n")
+  print(lm_model_real)
+}
+```
+
+
+```{r}
+
+cv_control <- trainControl(method = "cv", number = 10)  # 10-fold cross-validation
+
+# It performes cross-validation for linear regression for imaginary part at selected frequencies
+cat("Cross-Validation Results of Linear Regression Model (Imaginary Part of S11)\n")
+for (i in key_freq_indices) {
+
+  data_img <- bind_cols(selected_parameters, target = img_data[[i]])
+  
+
+  lm_model_img <- train(
+    target ~ .,
+    data = data_img,
+    method = "lm",
+    trControl = cv_control
+  )
+  
+
+  cat("\nFrequency Index:", i, "\n")
+  print(lm_model_img)
+}
+```
+
+```{r}
+
+cat("Cross Validation Results of Linear Regression Model Using the Principal Components for Real Part of S11\n")
+
+for (i in key_freq_indices) {
+  
+  data_real_pcr <- bind_cols(pc_data_pcr, target = real_data[[i]])
+  
+  n
+  linearpc_model_real_cv <- train(
+    target ~ ., 
+    data = data_real_pcr,
+    method = "lm",
+    trControl = cv_control
+  )
+  
+  
+  cat("\nFrequency Index:", i, "\n")
+  print(linearpc_model_real_cv)  
+}
+
+```
+
+```{r}
+cat("Cross Validation Results of Linear Regression Model Using the Principal Components for Imaginary Part of S11\n")
+
+for (i in key_freq_indices) {
+  
+  data_img_pcr <- bind_cols(pc_data_pcr, target = img_data[[i]])
+  
+  n
+  linearpc_model_real_cv <- train(
+    target ~ ., 
+    data = data_img_pcr,
+    method = "lm",
+    trControl = cv_control
+  )
+  
+  
+  cat("\nFrequency Index:", i, "\n")
+  print(linearpc_model_real_cv)  
+}
+
+```
+
+```{r}
+data_real_pcr_index75 <- bind_cols(pc_data_pcr_all, target = real_data[[75]])
+
+pcr_model_real_index75 <- pcr(target ~ ., data = data_real_pcr_index75, scale = TRUE, validation = "CV")
+
+
+validationplot(pcr_model_real_index75, val.type = "MSEP", main = "Cross-Validation MSE")
+```
+
+```{r}
+# I extracted cross-validation MSE values
+cv_mse <- MSEP(pcr_model_real_index75)$val[1, , -1]
+
+cv_mse_df <- data.frame(
+  Components = 1:length(cv_mse),
+  MSE = cv_mse
+)
+
+
+print(cv_mse_df)
+
+plot(cv_mse_df$Components, cv_mse_df$MSE, type = "b",
+     xlab = "Number of Components",
+     ylab = "Cross-Validation MSE",
+     main = "Cross-Validation MSE as a Function of Components")
+```
+
+```{r}
+apply(input_data, 2, shapiro.test)
+```
+
+
+
+```{r}
+visualization_data <- data.frame(pca_input2$x[, 1:2]) 
+
+
+ggplot(visualization_data, aes(x = PC1, y = PC2)) +
+  geom_point(color = "blue", alpha = 0.6) +
+  labs(title = "Scatter Plot of PC1 vs PC2",
+       x = "Principal Component 1 (PC1)",
+       y = "Principal Component 2 (PC2)") +
+  theme_minimal()
+```
+
+```{r}
+
+pca_real <- prcomp(real_data, center = TRUE, scale. = TRUE)
+
+pca_img <- prcomp(img_data, center = TRUE, scale. = TRUE)
+
+pca_real_scores <- data.frame(pca_real$x[, 1:2])
+pca_img_scores <- data.frame(pca_img$x[, 1:2])  
+
+colnames(pca_real_scores) <- c("PC1", "PC2")
+colnames(pca_img_scores) <- c("PC1", "PC2")
+
+ggplot(pca_real_scores, aes(x = PC1, y = PC2)) +
+  geom_point(color = "blue", alpha = 0.6) +
+  labs(title = "Scatter Plot of PC1 vs PC2 (Real Part)",
+       x = "Principal Component 1 (PC1)",
+       y = "Principal Component 2 (PC2)") +
+  theme_minimal()
+
+ggplot(pca_img_scores, aes(x = PC1, y = PC2)) +
+  geom_point(color = "red", alpha = 0.6) +
+  labs(title = "Scatter Plot of PC1 vs PC2 (Imaginary Part)",
+       x = "Principal Component 1 (PC1)",
+       y = "Principal Component 2 (PC2)") +
+  theme_minimal()
+
+```
+
+
+```{r}
+# I built a function to create pairwise scatter plots without correlation color
+plot_pca_comparison <- function(data, title_prefix) {
+  ggpairs(
+    data, 
+    columns = 1:6, 
+    upper = list(continuous = wrap("points", alpha = 0.6)), 
+    lower = list(continuous = wrap("points", alpha = 0.6))
+  ) +
+    labs(title = paste0(title_prefix, " - Comparison of Input and Output PCs")) +
+    theme_minimal()
+}
+input_pcs <- as.data.frame(pca_input2$x[, 1:6])
+real_pcs <- as.data.frame(pca_real$x[, 1:6])
+imaginary_pcs <- as.data.frame(pca_img$x[, 1:6])
+
+
+colnames(input_pcs) <- paste0("Input_PC", 1:6)
+colnames(real_pcs) <- paste0("Real_PC", 1:6)
+colnames(imaginary_pcs) <- paste0("Imaginary_PC", 1:6)
+
+combined_data_real <- cbind(input_pcs, real_pcs)
+combined_data_img<- cbind(input_pcs, imaginary_pcs)
+
+plot_real_vs_input <- plot_pca_comparison(combined_data_real, "Real Part")
+plot_img_vs_input <- plot_pca_comparison(combined_data_img, "Imaginary Part")
+
+
+print(plot_real_vs_input)
+print(plot_img_vs_input)
+
+# I calculated correlation for each corresponding PC pair for Real and Imaginary Parts
+cor_input_real <- sapply(1:6, function(i) cor(combined_data_real[[paste0("Input_PC", i)]], combined_data_real[[paste0("Real_PC", i)]]))
+cor_input_img <- sapply(1:6, function(i) cor(combined_data_img[[paste0("Input_PC", i)]], combined_data_img[[paste0("Imaginary_PC", i)]]))
+
+
+cat("Correlations between Input and Real Part PCs (PC1 to PC6):\n")
+print(cor_input_real)
+
+cat("\nCorrelations between Input and Imaginary Part PCs (PC1 to PC6):\n")
+print(cor_input_img)
+
+```
+
+```{r}
+
+data_combined2 <- cbind(input_pcs, real_pcs, imaginary_pcs)
+
+for (j in 1:6) {  
+  pc_name <- paste0("Input_PC", j)  
+  
+  plot <- ggplot(data_combined2, aes_string(x = pc_name)) +
+    geom_point(aes_string(y = paste0("Real_PC", j)), color = "blue", alpha = 0.7) +
+    geom_smooth(aes_string(y = paste0("Real_PC", j)), color = "blue", method = "loess", se = FALSE) +
+    geom_point(aes_string(y = paste0("Imaginary_PC", j)), color = "red", alpha = 0.7) +
+    geom_smooth(aes_string(y = paste0("Imaginary_PC", j)), color = "red", method = "loess", se = FALSE) +
+    labs(
+      title = paste("Scatter Plot of Input", pc_name, "vs Real and Imaginary Parts PC", j),
+      x = pc_name,
+      y = "OutputPC",j
+    ) +
+    theme_minimal()
+  
+  
+  print(plot)
+}
+```
+```{r}
+umap_input <- umap(input_pcs, n_neighbors = 15, min_dist = 0.1)
+umap_real <- umap(real_pcs, n_neighbors = 15, min_dist = 0.1)
+umap_imaginary <- umap(imaginary_pcs, n_neighbors = 15, min_dist = 0.1)
+umap_input_df <- as.data.frame(umap_input$layout)
+colnames(umap_input_df) <- c("UMAP1", "UMAP2")
+umap_real_df <- as.data.frame(umap_real$layout)
+colnames(umap_real_df) <- c("UMAP1", "UMAP2")
+
+umap_imaginary_df <- as.data.frame(umap_imaginary$layout)
+colnames(umap_imaginary_df) <- c("UMAP1", "UMAP2")
+
+ggplot(umap_input_df, aes(x = UMAP1, y = UMAP2)) +
+  geom_point(color = "blue", alpha = 0.6) +
+  labs(title = "UMAP Projection of Input Data",
+       x = "UMAP Dimension 1",
+       y = "UMAP Dimension 2") +
+  theme_minimal()
+
+ggplot(umap_real_df, aes(x = UMAP1, y = UMAP2)) +
+  geom_point(color = "green", alpha = 0.6) +
+  labs(title = "UMAP Projection of Real Part of S11",
+       x = "UMAP Dimension 1",
+       y = "UMAP Dimension 2") +
+  theme_minimal()
+
+ggplot(umap_imaginary_df, aes(x = UMAP1, y = UMAP2)) +
+  geom_point(color = "red", alpha = 0.6) +
+  labs(title = "UMAP Projection of Imaginary Part of S11",
+       x = "UMAP Dimension 1",
+       y = "UMAP Dimension 2") +
+  theme_minimal()
+```
+
+```{r}
+cat("UMAP-based Regression Model for Real and Imaginary Parts of S11\n")
+
+for (i in key_freq_indices) {
+  
+  data_real_umap <- bind_cols(umap_input_df, target = real_data[[i]])
+  
+  # I created linear regression model using UMAP dimensions as predictors
+  umap_model_real <- lm(target ~ ., data = data_real_umap)
+  
+  cat("\nFrequency Index:", i, "- Real Part\n")
+  print(summary(umap_model_real))
+  
+  data_imaginary_umap <- bind_cols(umap_input_df, target = img_data[[i]])
+  
+  umap_model_imaginary <- lm(target ~ ., data = data_imaginary_umap)
+  
+  cat("\nFrequency Index:", i, "- Imaginary Part\n")
+  print(summary(umap_model_imaginary))
+}
+```
+
+```{r}
+# I performed Kernel PCA on the input data using the RBF kernel
+kpca_input <- kpca(~., data = input_data, kernel = "rbfdot", kpar = list(sigma = 0.1), features = 6)
+
+input_kpca_df <- as.data.frame(rotated(kpca_input))
+colnames(input_kpca_df) <- paste0("KPC", 1:ncol(input_kpca_df))
+
+# I plotted he first two Kernel Principal Components for visualization
+library(ggplot2)
+
+ggplot(input_kpca_df, aes(x = KPC1, y = KPC2)) +
+  geom_point(color = "blue", alpha = 0.6) +
+  labs(title = "Kernel PCA (RBF Kernel) of Input Data",
+       x = "Kernel Principal Component 1",
+       y = "Kernel Principal Component 2") +
+  theme_minimal()
+
+# I applied Kernel PCA for both parts
+kpca_real <- kpca(~., data = real_data, kernel = "rbfdot", kpar = list(sigma = 0.1), features = 6)
+real_kpca_df <- as.data.frame(rotated(kpca_real))
+colnames(real_kpca_df) <- paste0("KPC", 1:ncol(real_kpca_df))
+
+kpca_imaginary <- kpca(~., data = img_data, kernel = "rbfdot", kpar = list(sigma = 0.1), features = 6)
+imaginary_kpca_df <- as.data.frame(rotated(kpca_imaginary))
+colnames(imaginary_kpca_df) <- paste0("KPC", 1:ncol(imaginary_kpca_df))
+
+ggplot(real_kpca_df, aes(x = KPC1, y = KPC2)) +
+  geom_point(color = "green", alpha = 0.6) +
+  labs(title = "Kernel PCA (RBF Kernel) of Real Part of S11",
+       x = "Kernel Principal Component 1",
+       y = "Kernel Principal Component 2") +
+  theme_minimal()
+
+ggplot(imaginary_kpca_df, aes(x = KPC1, y = KPC2)) +
+  geom_point(color = "red", alpha = 0.6) +
+  labs(title = "Kernel PCA (RBF Kernel) of Imaginary Part of S11",
+       x = "Kernel Principal Component 1",
+       y = "Kernel Principal Component 2") +
+  theme_minimal()
+```
+
+```{r}
+cv_control_kpc <- trainControl(method = "cv", number = 10)  # 10-fold cross-validation
+```
+
+```{r}
+cat("Kernel PCA Regression for Real Part of S11\n")
+for (i in key_freq_indices) {
+  
+  data_real_kpca <- bind_cols(input_kpca_df, target = real_data[[i]])
+  
+  kpca_model_real <- train(
+    target ~ ., 
+    data = data_real_kpca,
+    method = "lm",
+    trControl = cv_control_kpc
+  )
+  
+  cat("\nFrequency Index:", i, "\n")
+  print(kpca_model_real)
+}
+
+cat("Kernel PCA Regression for Imaginary Part of S11\n")
+for (i in key_freq_indices) {
+  
+  data_imaginary_kpca <- bind_cols(input_kpca_df, target = img_data[[i]])
+  
+  kpca_model_imaginary <- train(
+    target ~ ., 
+    data = data_imaginary_kpca,
+    method = "lm",
+    trControl = cv_control_kpc
+  )
+  
+  cat("\nFrequency Index:", i, "\n")
+  print(kpca_model_imaginary)
+}
+```
+
+```{r}
+umap_input2 <- umap(input_pcs, n_neighbors = 15, min_dist = 0.1, n_components = 6)
+umap_real2 <- umap(real_pcs, n_neighbors = 15, min_dist = 0.1, n_components = 6)
+umap_imaginary2 <- umap(imaginary_pcs, n_neighbors = 15, min_dist = 0.1, n_components = 6)
+
+umap_input_df2 <- as.data.frame(umap_input2$layout)
+colnames(umap_input_df2) <- paste0("UMAP", 1:6)
+
+umap_real_df2 <- as.data.frame(umap_real2$layout)
+colnames(umap_real_df2) <- paste0("UMAP", 1:6)
+
+umap_imaginary_df2 <- as.data.frame(umap_imaginary2$layout)
+colnames(umap_imaginary_df2) <- paste0("UMAP", 1:6)
+```
+
+```{r}
+cat("UMAP-based Regression Model for Real and Imaginary Parts of S11\n")
+
+for (i in key_freq_indices) {
+  
+  data_real_umap2 <- bind_cols(umap_input_df2, target = real_data[[i]])
+  
+  umap_model_real2 <- lm(target ~ ., data = data_real_umap2)
+  
+  cat("\nFrequency Index:", i, "- Real Part\n")
+  print(summary(umap_model_real2))
+  
+  data_imaginary_umap2 <- bind_cols(umap_input_df2, target = img_data[[i]])
+  
+  umap_model_imaginary2 <- lm(target ~ ., data = data_imaginary_umap2)
+  
+  cat("\nFrequency Index:", i, "- Imaginary Part\n")
+  print(summary(umap_model_imaginary2))
+}
+```
+
