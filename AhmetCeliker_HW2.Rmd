@@ -1,0 +1,2397 @@
+---
+title: "hw2v2"
+author: "Ahmet Çeliker"
+date: "2024-11-29"
+output: html_document
+---
+
+
+
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(rpart)
+library(caret)
+library(rpart.plot)
+library(tidyr)
+library(factoextra)
+library(rpart.plot)
+library(rattle)
+library(glmnet)
+library(ROCR)
+library(pROC)
+```
+
+#QUESTION 1
+
+```{r}
+match_data_org <- read.csv("match_data.csv")
+```
+
+```{r}
+match_data <- match_data_org %>%
+  filter(suspended == "False" & stopped == "False")
+```
+
+```{r}
+start_rows <- match_data %>%
+  group_by(fixture_id, halftime) %>%
+  filter(current_time == min(current_time)) %>% 
+  ungroup()
+
+```
+
+```{r}
+match_half <- start_rows %>%
+  mutate(
+    P_home = 1 / `X1`,
+    P_draw = 1 / X,
+    P_away = 1 / `X2`
+  )
+```
+
+```{r}
+  match_half <- match_half %>%
+    mutate(total_prob = P_home + P_draw + P_away,
+           P_home_norm = P_home / total_prob,
+           P_draw_norm = P_draw / total_prob,
+           P_away_norm = P_away / total_prob)
+```
+
+```{r}
+  match_half <- match_half %>%
+    mutate(home_away_diff = P_home - P_away,
+           norm_home_away_diff = P_home_norm - P_away_norm)
+```
+
+
+
+
+```{r}
+ggplot(match_half, aes(x = home_away_diff, y = P_draw)) +
+  geom_point(aes(color = halftime)) +
+  geom_smooth(method = "loess")+
+labs(
+    title = "Initial Calculation: Home - Away Difference vs Draw Probability",
+    x = "P(Home Win) - P(Away Win) (Initial Calculation)",
+    y = "P(Draw) (Initial Calculation)"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+ggplot(match_half, aes(x = norm_home_away_diff, y = P_draw_norm)) +
+  geom_point(aes(color = halftime)) +
+  geom_smooth(method = "loess")+
+  labs(
+    title = "Normalized: Home - Away Difference vs Draw Probability",
+    x = "P(Home Win) - P(Away Win) (Normalized)",
+    y = "P(Draw) (Normalized)",
+    color = "Halftime"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+bins <- seq(-1, 1, by = 0.025)
+```
+
+```{r}
+binned_data <- match_half %>%
+  mutate(bin = cut(home_away_diff, bins, include.lowest = TRUE)) %>%
+  group_by(bin) %>%
+  summarise(
+    total_games = n(),                           
+    draw_games = sum(result == "X"),            
+    estimated_prob_draw = draw_games / total_games,  
+    .groups = "drop"
+  )
+```
+
+```{r}
+
+ggplot(binned_data, aes(x = bin, y = estimated_prob_draw)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(
+    title = "Estimated Probability of Draws by Bins",
+    x = "P(Home Win) - P(Away Win) Bins",
+    y = "Estimated Probability of Draw"
+  ) +
+  theme_minimal()
+```
+
+
+```{r}
+binned_data2 <- match_half %>%
+  mutate(bin = cut(home_away_diff, bins, include.lowest = TRUE)) %>%
+  group_by(bin) %>%
+  reframe(
+    total_games = n(),  # Total games in each bin
+    draw_games = sum(result == "X", na.rm = TRUE),  # Number of draw games in each bin
+    estimated_prob_draw = draw_games / total_games,  # Probability of draw
+    bin_lower = as.numeric(gsub("\\(|\\[|,.*", "", unique(bin))),  # Lower bin boundary
+    bin_upper = as.numeric(gsub(".*,|\\]|\\)", "", unique(bin))),  # Upper bin boundary
+    bin_center = (bin_lower + bin_upper) / 2  # Calculate bin center
+  )
+```
+
+
+```{r}
+ggplot() +
+  # Raw probabilities as blue points
+  geom_point(data = match_half, aes(x = home_away_diff, y = P_draw), alpha = 0.2, color = "blue") +
+  
+  # Trend line using LOESS
+  geom_smooth(data = match_half, aes(x = home_away_diff, y = P_draw), method = "loess", color = "blue", se = FALSE) +
+  
+  # Binned outcomes as red points
+  geom_point(data = binned_data2, aes(x = bin_center, y = estimated_prob_draw), color = "red", size = 2) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.10), limits = c(0, 1)) +
+  labs(
+    title = "(a) Trend and Odds",
+    x = "P(home win) - P(away win)",
+    y = "P(draw)",
+    color = ""
+  ) +
+  theme_minimal()
+```
+```{r}
+ggplot() +
+  # Raw probabilities as blue points
+  geom_point(data = match_half %>% filter(halftime == "1st-half"), aes(x = home_away_diff, y = P_draw), alpha = 0.2, color = "blue") +
+  
+  # Trend line using LOESS
+  geom_smooth(data = match_half, aes(x = home_away_diff, y = P_draw), method = "loess", color = "blue", se = FALSE) +
+  
+  # Binned outcomes as red points
+  geom_point(data = binned_data2, aes(x = bin_center, y = estimated_prob_draw), color = "red", size = 2) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.10), limits = c(0, 1)) +
+  # Labels and theme
+  labs(
+    title = "First Half (Initial) ",
+    x = "P(home win) - P(away win) (Initial Calculation)",
+    y = "P(draw) (Initial Calculation)",
+    color = ""
+  ) +
+  theme_minimal()
+```
+
+
+```{r}
+ggplot() +
+  # Raw probabilities as blue points
+  geom_point(data = match_half %>% filter(halftime == "1st-half"), aes(x = norm_home_away_diff, y = P_draw_norm), alpha = 0.2, color = "blue") +
+  
+  # Trend line using LOESS
+  geom_smooth(data = match_half, aes(x = norm_home_away_diff, y = P_draw_norm), method = "loess", color = "blue", se = FALSE) +
+  
+  # Binned outcomes as red points
+  geom_point(data = binned_data2, aes(x = bin_center, y = estimated_prob_draw), color = "red", size = 2) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.10), limits = c(0, 1)) +
+  # Labels and theme
+  labs(
+    title = "First Half (Normalized)",
+    x = "P(home win) - P(away win) (Normalized)",
+    y = "P(draw) (Normalized)",
+    color = ""
+  ) +
+  theme_minimal()
+```
+```{r}
+ggplot() +
+  # Raw probabilities as blue points
+  geom_point(data = match_half %>% filter(halftime == "2nd-half"), aes(x = home_away_diff, y = P_draw), alpha = 0.2, color = "blue") +
+  
+  # Trend line using LOESS
+  geom_smooth(data = match_half, aes(x = home_away_diff, y = P_draw), method = "loess", color = "blue", se = FALSE) +
+  
+  # Binned outcomes as red points
+  geom_point(data = binned_data2, aes(x = bin_center, y = estimated_prob_draw), color = "red", size = 2) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.10), limits = c(0, 1)) +
+  # Labels and theme
+  labs(
+    title = "Second Half (Initial)",
+    x = "P(home win) - P(away win) (Initial Calculation)",
+    y = "P(draw) (Initial Calculation)",
+    color = ""
+  ) +
+  theme_minimal()
+```
+
+```{r}
+ggplot() +
+  # Raw probabilities as blue points
+  geom_point(data = match_half %>% filter(halftime == "2nd-half"), aes(x = norm_home_away_diff, y = P_draw_norm), alpha = 0.2, color = "blue") +
+  
+  # Trend line using LOESS
+  geom_smooth(data = match_half, aes(x = norm_home_away_diff, y = P_draw_norm), method = "loess", color = "blue", se = FALSE) +
+  
+  # Binned outcomes as red points
+  geom_point(data = binned_data2, aes(x = bin_center, y = estimated_prob_draw), color = "red", size = 2) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.10), limits = c(0, 1)) +
+  # Labels and theme
+  labs(
+    title = "Second Half (Normalized)",
+    x = "P(home win) - P(away win) (Normalized)",
+    y = "P(draw) (Normalized)",
+    color = ""
+  ) +
+  theme_minimal()
+```
+
+
+```{r}
+
+match_data2 <-match_data
+
+match_data2 <- match_data2 %>%
+  mutate(
+    P_home = 1 / `X1`,
+    P_draw = 1 / X,
+    P_away = 1 / `X2`
+  )
+
+
+match_data2 <- match_data2 %>%
+  mutate(
+    total_prob = P_home + P_draw + P_away,
+    P_home_norm = P_home / total_prob,
+    P_draw_norm = P_draw / total_prob,
+    P_away_norm = P_away / total_prob
+  )
+
+
+match_data2 <- match_data2 %>%
+  mutate(
+    home_away_diff = P_home - P_away,
+    norm_home_away_diff = P_home_norm - P_away_norm
+  )
+
+match_data2 <- match_data2 %>%
+  filter(!is.na(home_away_diff) & !is.na(P_draw))
+
+ggplot(match_data2, aes(x = home_away_diff, y = P_draw)) +
+  geom_point(aes(color = halftime)) + 
+  geom_smooth(method = "loess") +      
+  labs(
+    title = "Home - Away Difference vs Draw Probability (All Data)",
+    x = "P(Home Win) - P(Away Win)",
+    y = "P(Draw)"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+ggplot(match_data2, aes(x = norm_home_away_diff, y = P_draw_norm)) +
+  geom_point(aes(color = halftime)) +
+  geom_smooth(method = "loess")+
+  labs(
+    title = "Normalized: Home - Away Difference vs Draw Probability (All Data)",
+    x = "P(Home Win) - P(Away Win) (Normalized)",
+    y = "P(Draw) (Normalized)",
+    color = "Halftime"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+binned_data_forall <- match_data2 %>%
+  mutate(bin = cut(home_away_diff, bins, include.lowest = TRUE)) %>%
+  group_by(bin) %>%
+  summarise(
+    total_games = n(),                           
+    draw_games = sum(result == "X"),            
+    estimated_prob_draw = draw_games / total_games,  
+    .groups = "drop"
+  )
+
+
+binned_data_forall2 <- match_data2 %>%
+  mutate(bin = cut(home_away_diff, bins, include.lowest = TRUE)) %>%
+  group_by(bin) %>%
+  reframe(
+    total_games = n(),  # Total games in each bin
+    draw_games = sum(result == "X", na.rm = TRUE),  # Number of draw games in each bin
+    estimated_prob_draw = draw_games / total_games,  # Probability of draw
+    bin_lower = as.numeric(gsub("\\(|\\[|,.*", "", unique(bin))),  # Lower bin boundary
+    bin_upper = as.numeric(gsub(".*,|\\]|\\)", "", unique(bin))),  # Upper bin boundary
+    bin_center = (bin_lower + bin_upper) / 2  # Calculate bin center
+  )
+```
+
+
+```{r}
+ggplot() +
+  # Raw probabilities as blue points
+  geom_point(data = match_data2, aes(x = home_away_diff, y = P_draw), alpha = 0.2, color = "blue") +
+  
+  # Trend line using LOESS
+  geom_smooth(data = match_data2, aes(x = home_away_diff, y = P_draw), method = "loess", color = "orange", se = FALSE) +
+  
+  # Binned outcomes as red points
+  geom_point(data = binned_data_forall2, aes(x = bin_center, y = estimated_prob_draw), color = "red", size = 2) +
+  
+  # Y-axis scaled with 0.10 intervals
+  scale_y_continuous(breaks = seq(0, 1, by = 0.10), limits = c(0, 1)) +
+  
+  labs(
+    title = "(a) Trend and Odds",
+    x = "P(home win) - P(away win)",
+    y = "P(draw)",
+    color = ""
+  ) +
+  theme_minimal()
+```
+```{r}
+
+ggplot() +
+  # Raw probabilities as blue points
+  geom_point(data = match_data2 %>% filter(halftime == "1st-half"), aes(x = norm_home_away_diff, y = P_draw_norm), alpha = 0.2, color = "blue") +
+  
+  # Trend line using LOESS
+  geom_smooth(data = match_data2, aes(x = norm_home_away_diff, y = P_draw_norm), method = "loess", color = "orange", se = FALSE) +
+  
+  # Binned outcomes as red points
+  geom_point(data = binned_data_forall2, aes(x = bin_center, y = estimated_prob_draw), color = "red", size = 2) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.10), limits = c(0, 1)) +
+  # Labels and theme
+  labs(
+    title = "First Half (Normalized)",
+    x = "P(home win) - P(away win) (Normalized)",
+    y = "P(draw) (Normalized)",
+    color = ""
+  ) +
+  theme_minimal()
+```
+
+```{r}
+ggplot() +
+  # Raw probabilities as blue points
+  geom_point(data = match_data2 %>% filter(halftime == "2nd-half"), aes(x = norm_home_away_diff, y = P_draw_norm), alpha = 0.2, color = "blue") +
+  
+  # Trend line using LOESS
+  geom_smooth(data = match_data2, aes(x = norm_home_away_diff, y = P_draw_norm), method = "loess", color = "orange", se = FALSE) +
+  
+  # Binned outcomes as red points
+  geom_point(data = binned_data_forall2, aes(x = bin_center, y = estimated_prob_draw), color = "red", size = 2) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.10), limits = c(0, 1)) +
+  # Labels and theme
+  labs(
+    title = "Second Half (Normalized)",
+    x = "P(home win) - P(away win) (Normalized)",
+    y = "P(draw) (Normalized)",
+    color = ""
+  ) +
+  theme_minimal()
+```
+
+
+#QUESTION 2
+
+```{r}
+match_data <- match_data %>%
+  mutate(
+    total_minute = case_when(
+      halftime == "1st-half" ~ minute,                         
+      halftime == "2nd-half" ~ 45 + minute
+    )
+  )
+```
+
+```{r}
+fixture_ids_to_above90 <- match_data %>%
+  filter(halftime == "2nd-half" & total_minute > 90) %>%
+  pull(fixture_id) %>%
+  unique()
+```
+
+```{r}
+print(fixture_ids_to_above90)
+```
+```{r}
+matches_with_90_minute <- match_data %>%
+  group_by(fixture_id) %>%
+  summarise(has_90_minute = any(total_minute == 90), .groups = "drop")
+
+
+match_data_with_90_flag <- match_data %>%
+  left_join(matches_with_90_minute, by = "fixture_id")
+```
+
+
+```{r}
+state_at_90 <- match_data_with_90_flag %>%
+  filter(total_minute == 90) %>%
+  select(fixture_id, current_state) %>%
+  rename(state_90 = current_state)
+```
+
+```{r}
+state_below_90 <- match_data_with_90_flag %>%
+  filter(has_90_minute == FALSE) %>%
+  group_by(fixture_id) %>%
+  filter(total_minute == max(total_minute)) %>%
+  select(fixture_id, current_state) %>%
+  rename(state_below_90 = current_state)
+```
+
+```{r}
+unique_fixture_count <- match_data %>%
+  summarise(total_matches = n_distinct(fixture_id)) %>%
+  pull(total_matches)
+
+
+print(unique_fixture_count)
+```
+```{r}
+n_state_at_90 <- length(unique(state_at_90$fixture_id))
+n_state_below_90 <- length(unique(state_below_90$fixture_id))
+total_unique_ids <- length(unique(c(state_at_90$fixture_id, state_below_90$fixture_id)))
+
+cat("State_at_90 IDs:", n_state_at_90, "\n")
+cat("State_below_90 IDs:", n_state_below_90, "\n")
+cat("Total Unique IDs:", total_unique_ids, "\n")
+
+```
+```{r}
+
+duplicated_ids <- state_at_90 %>%
+  group_by(fixture_id) %>%
+  summarise(count = n()) %>%
+  filter(count > 1) %>%
+  pull(fixture_id)
+
+
+duplicated_rows <- state_at_90 %>%
+  filter(fixture_id %in% duplicated_ids)
+
+
+cat("Unique olmayan ID sayısı:", length(duplicated_ids), "\n")
+duplicated_rows
+
+```
+
+```{r}
+state_at_90 <- state_at_90 %>%
+  distinct(fixture_id, .keep_all = TRUE)
+```
+
+```{r}
+matches_with_state_change <- match_data_with_90_flag %>%
+  filter(total_minute > 90 | has_90_minute == FALSE) %>% # After 90 or without the 90th minute
+  left_join(state_at_90, by = "fixture_id") %>% # Merge with status at 90 minutes
+  left_join(state_below_90, by = "fixture_id") %>% # Merge with largest case less than 90
+  group_by(fixture_id) %>%
+  filter(
+    (has_90_minute == TRUE & current_state != state_90 & current_state == result) | # After 90, the situation changes and the result is different.
+    (has_90_minute == FALSE & current_state != state_below_90 & current_state == result) # Change in case less than 90
+  ) %>%
+  pull(fixture_id) %>%
+  unique()
+```
+
+```{r}
+num_matches_with_state_change <- length(matches_with_state_change)
+print(num_matches_with_state_change)
+```
+
+```{r}
+state_change_matches_data <- match_data_with_90_flag %>%
+  filter(fixture_id %in% matches_with_state_change)
+```
+
+```{r}
+early_red_cards <- match_data_with_90_flag %>%
+  filter(
+    total_minute <= 15 & 
+    (Redcards...away != 0 | Redcards...home != 0)
+  ) %>%
+  pull(fixture_id) %>%
+  unique()
+```
+
+```{r}
+print(early_red_cards)
+```
+
+
+
+```{r}
+total_red_cards <- match_data_with_90_flag %>%
+  filter(
+    (Redcards...away != 0 | Redcards...home != 0)
+  ) %>%
+  pull(fixture_id) %>%
+  unique()
+```
+
+```{r}
+print(total_red_cards)
+```
+
+```{r}
+length(total_red_cards)
+```
+
+```{r}
+first_red_card_minute <- match_data_with_90_flag %>%
+  filter(fixture_id %in% total_red_cards & (Redcards...away != 0 | Redcards...home != 0)) %>%
+  group_by(fixture_id) %>%
+  summarise(
+    first_red_card_minute = min(total_minute[Redcards...away != 0 | Redcards...home != 0]),
+    .groups = "drop"
+  )
+```
+
+```{r}
+early_red_card_matches <- match_data_with_90_flag %>%
+  filter(fixture_id %in% early_red_cards)
+```
+
+```{r}
+excluding_early_red_card_matches <- match_data_with_90_flag %>%
+  filter(!fixture_id %in% early_red_cards)
+```
+
+```{r}
+excluding_state_change_matches_data <- match_data_with_90_flag %>%
+  filter(!fixture_id %in% matches_with_state_change)
+```
+
+```{r}
+final_filtered_data <- match_data_with_90_flag %>%
+  filter(!fixture_id %in% early_red_cards & !fixture_id %in% matches_with_state_change)
+```
+
+
+```{r}
+filtered_data1 <- final_filtered_data %>%
+  mutate(
+    P_home = 1 / `X1`,
+    P_draw = 1 / X,
+    P_away = 1 / `X2`
+  )
+
+filtered_data1 <- filtered_data1 %>%
+  mutate(
+    total_prob = P_home + P_draw + P_away,
+    P_home_norm = P_home / total_prob,
+    P_draw_norm = P_draw / total_prob,
+    P_away_norm = P_away / total_prob
+  )
+
+
+filtered_data1 <- filtered_data1 %>%
+  mutate(
+    home_away_diff = P_home - P_away,
+    norm_home_away_diff = P_home_norm - P_away_norm
+  )
+
+
+```
+
+```{r}
+binned_filtered1 <- filtered_data1 %>%
+  mutate(bin = cut(home_away_diff, bins, include.lowest = TRUE)) %>%
+  group_by(bin) %>%
+  reframe(
+    total_games = n(),  # Total games in each bin
+    draw_games = sum(result == "X", na.rm = TRUE),  # Number of draw games in each bin
+    estimated_prob_draw = draw_games / total_games,  # Probability of draw
+    bin_lower = as.numeric(gsub("\\(|\\[|,.*", "", unique(bin))),  # Lower bin boundary
+    bin_upper = as.numeric(gsub(".*,|\\]|\\)", "", unique(bin))),  # Upper bin boundary
+    bin_center = (bin_lower + bin_upper) / 2  # Calculate bin center
+  )
+```
+
+```{r}
+ggplot() +
+  # Raw probabilities as blue points
+  geom_point(data = filtered_data1, aes(x = norm_home_away_diff, y = P_draw), alpha = 0.2, color = "blue") +
+  
+  # Trend line using LOESS
+  geom_smooth(data = filtered_data1, aes(x = norm_home_away_diff, y = P_draw), method = "loess", color = "orange", se = FALSE) +
+  
+  # Binned outcomes as red points
+  geom_point(data = binned_filtered1, aes(x = bin_center, y = estimated_prob_draw), color = "red", size = 2) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.10), limits = c(0, 1)) +
+  labs(
+    title = "(a) Trend and Odds with filtered data according to case 1 (all data)",
+    x = "P(home win) - P(away win) (Normalized)",
+    y = "P(draw) (Normalized)",
+    color = ""
+  ) +
+  theme_minimal()
+```
+```{r}
+earleast_timestamp_filtered <- final_filtered_data %>%
+  group_by(fixture_id, halftime) %>%
+  filter(current_time == min(current_time)) %>% 
+  ungroup()
+```
+
+```{r}
+earleast_filtered_data1 <- earleast_timestamp_filtered %>%
+  mutate(
+    P_home = 1 / `X1`,
+    P_draw = 1 / X,
+    P_away = 1 / `X2`
+  )
+
+earleast_filtered_data1 <- earleast_filtered_data1 %>%
+  mutate(
+    total_prob = P_home + P_draw + P_away,
+    P_home_norm = P_home / total_prob,
+    P_draw_norm = P_draw / total_prob,
+    P_away_norm = P_away / total_prob
+  )
+
+
+earleast_filtered_data1 <- earleast_filtered_data1 %>%
+  mutate(
+    home_away_diff = P_home - P_away,
+    norm_home_away_diff = P_home_norm - P_away_norm
+  )
+
+```
+
+```{r}
+binned_earleast_filtered1 <- earleast_filtered_data1 %>%
+  mutate(bin = cut(home_away_diff, bins, include.lowest = TRUE)) %>%
+  group_by(bin) %>%
+  reframe(
+    total_games = n(),  
+    draw_games = sum(result == "X", na.rm = TRUE),  
+    estimated_prob_draw = draw_games / total_games,  
+    bin_lower = as.numeric(gsub("\\(|\\[|,.*", "", unique(bin))),  
+    bin_upper = as.numeric(gsub(".*,|\\]|\\)", "", unique(bin))), 
+    bin_center = (bin_lower + bin_upper) / 2 
+  )
+```
+
+```{r}
+ggplot() +
+  # Raw probabilities as blue points
+  geom_point(data = earleast_filtered_data1, aes(x = norm_home_away_diff, y = P_draw), alpha = 0.2, color = "blue") +
+  
+  # Trend line using LOESS
+  geom_smooth(data = earleast_filtered_data1, aes(x = norm_home_away_diff, y = P_draw), method = "loess", color = "orange", se = FALSE) +
+  
+  # Binned outcomes as red points
+  geom_point(data = binned_filtered1, aes(x = bin_center, y = estimated_prob_draw), color = "red", size = 2) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.10), limits = c(0, 1)) +
+  labs(
+    title = "(a) Trend and Odds with filtered data according to case 1 (earlest timestamp)",
+    x = "P(home win) - P(away win) (Normalized)",
+    y = "P(draw) (Normalized)",
+    color = ""
+  ) +
+  theme_minimal()
+```
+
+```{r}
+ggplot() +
+  # Raw probabilities as blue points
+  geom_point(data = earleast_filtered_data1 %>% filter(halftime == "1st-half"), aes(x = norm_home_away_diff, y = P_draw_norm), alpha = 0.2, color = "blue") +
+  
+  # Trend line using LOESS
+  geom_smooth(data = earleast_filtered_data1, aes(x = norm_home_away_diff, y = P_draw_norm), method = "loess", color = "orange", se = FALSE) +
+  
+  # Binned outcomes as red points
+  geom_point(data = binned_filtered1, aes(x = bin_center, y = estimated_prob_draw), color = "red", size = 2) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.10), limits = c(0, 1)) +
+  # Labels and theme
+  labs(
+    title = "Filtered Data According to Case 1 (earlest timestamp) First Half (Normalized)",
+    x = "P(home win) - P(away win) (Normalized)",
+    y = "P(draw) (Normalized)",
+    color = ""
+  ) +
+  theme_minimal()
+
+```
+```{r}
+ggplot() +
+  # Raw probabilities as blue points
+  geom_point(data = earleast_filtered_data1 %>% filter(halftime == "2nd-half"), aes(x = norm_home_away_diff, y = P_draw_norm), alpha = 0.2, color = "blue") +
+  
+  # Trend line using LOESS
+  geom_smooth(data = earleast_filtered_data1, aes(x = norm_home_away_diff, y = P_draw_norm), method = "loess", color = "orange", se = FALSE) +
+  
+  # Binned outcomes as red points
+  geom_point(data = binned_filtered1, aes(x = bin_center, y = estimated_prob_draw), color = "red", size = 2) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.10), limits = c(0, 1)) +
+  # Labels and theme
+  labs(
+    title = "Filtered Data According to Case 1 (earlest timestamp) Second Half (Normalized)",
+    x = "P(home win) - P(away win) (Normalized)",
+    y = "P(draw) (Normalized)",
+    color = ""
+  ) +
+  theme_minimal()
+```
+
+
+```{r}
+matches_with_80_minute <- match_data %>%
+  group_by(fixture_id) %>%
+  summarise(has_80_minute = any(total_minute == 80), .groups = "drop")
+
+match_data_with_80_flag <- match_data %>%
+  left_join(matches_with_80_minute, by = "fixture_id")
+
+
+state_at_80 <- match_data_with_80_flag %>%
+  filter(total_minute == 80) %>%
+  select(fixture_id, current_state) %>%
+  distinct(fixture_id, .keep_all = TRUE) %>%  
+  rename(state_80 = current_state)
+
+
+state_below_80 <- match_data_with_80_flag %>%
+  filter(has_80_minute == FALSE) %>%
+  group_by(fixture_id) %>%
+  filter(total_minute == max(total_minute)) %>%
+  ungroup() %>%
+  select(fixture_id, current_state) %>%
+  distinct(fixture_id, .keep_all = TRUE) %>%  
+  rename(state_below_80 = current_state)
+
+
+matches_with_state_change2 <- match_data_with_80_flag %>%
+  filter(total_minute > 80 | has_80_minute == FALSE) %>% 
+  left_join(state_at_80, by = "fixture_id") %>%  
+  left_join(state_below_80, by = "fixture_id") %>%  
+  group_by(fixture_id) %>%
+  filter(
+    (has_80_minute == TRUE & current_state != state_80 & current_state == result) | 
+    (has_80_minute == FALSE & current_state != state_below_80 & current_state == result)
+  ) %>%
+  pull(fixture_id) %>%
+  unique()
+num_matches_with_state_change2 <- length(matches_with_state_change2)
+print(num_matches_with_state_change2)
+```
+
+
+
+```{r}
+early_red_cards2 <- match_data_with_90_flag %>%
+  filter(
+    total_minute <= 30 & 
+    (Redcards...away != 0 | Redcards...home != 0)
+  ) %>%
+  pull(fixture_id) %>%
+  unique()
+```
+
+```{r}
+print(early_red_cards2)
+length(early_red_cards2)
+```
+
+```{r}
+final_filtered_data2 <- match_data_with_80_flag %>%
+  filter(!fixture_id %in% early_red_cards2 & !fixture_id %in% matches_with_state_change2)
+```
+
+```{r}
+earleast_timestamp_filtered2 <- final_filtered_data2 %>%
+  group_by(fixture_id, halftime) %>%
+  filter(current_time == min(current_time)) %>% 
+  ungroup()
+```
+
+```{r}
+earleast_filtered_data2 <- earleast_timestamp_filtered2 %>%
+  mutate(
+    P_home = 1 / `X1`,
+    P_draw = 1 / X,
+    P_away = 1 / `X2`
+  )
+
+earleast_filtered_data2 <- earleast_filtered_data2 %>%
+  mutate(
+    total_prob = P_home + P_draw + P_away,
+    P_home_norm = P_home / total_prob,
+    P_draw_norm = P_draw / total_prob,
+    P_away_norm = P_away / total_prob
+  )
+
+
+earleast_filtered_data2 <- earleast_filtered_data2 %>%
+  mutate(
+    home_away_diff = P_home - P_away,
+    norm_home_away_diff = P_home_norm - P_away_norm
+  )
+
+```
+
+```{r}
+length(unique(earleast_filtered_data2$fixture_id))
+```
+
+
+
+```{r}
+binned_earleast_filtered2 <- earleast_filtered_data2 %>%
+  mutate(bin = cut(home_away_diff, bins, include.lowest = TRUE)) %>%
+  group_by(bin) %>%
+  reframe(
+    total_games = n(),  
+    draw_games = sum(result == "X", na.rm = TRUE),  
+    estimated_prob_draw = draw_games / total_games,  
+    bin_lower = as.numeric(gsub("\\(|\\[|,.*", "", unique(bin))),  
+    bin_upper = as.numeric(gsub(".*,|\\]|\\)", "", unique(bin))), 
+    bin_center = (bin_lower + bin_upper) / 2 
+  )
+```
+
+```{r}
+ggplot() +
+  # Raw probabilities as blue points
+  geom_point(data = earleast_filtered_data2, aes(x = norm_home_away_diff, y = P_draw), alpha = 0.2, color = "blue") +
+  
+  # Trend line using LOESS
+  geom_smooth(data = earleast_filtered_data2, aes(x = norm_home_away_diff, y = P_draw), method = "loess", color = "orange", se = FALSE) +
+  
+  # Binned outcomes as red points
+  geom_point(data = binned_earleast_filtered2, aes(x = bin_center, y = estimated_prob_draw), color = "red", size = 2) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.10), limits = c(0, 1)) +
+  labs(
+    title = "(a) Trend and Odds with filtered data according to case 2 (earlest timestamp)",
+    x = "P(home win) - P(away win) (Normalized)",
+    y = "P(draw) (Normalized)",
+    color = ""
+  ) +
+  theme_minimal()
+```
+
+
+
+
+```{r}
+filtered_data2 <- final_filtered_data2 %>%
+  mutate(
+    P_home = 1 / `X1`,
+    P_draw = 1 / X,
+    P_away = 1 / `X2`
+  )
+
+filtered_data2 <- filtered_data2 %>%
+  mutate(
+    total_prob = P_home + P_draw + P_away,
+    P_home_norm = P_home / total_prob,
+    P_draw_norm = P_draw / total_prob,
+    P_away_norm = P_away / total_prob
+  )
+
+
+filtered_data2 <- filtered_data2 %>%
+  mutate(
+    home_away_diff = P_home - P_away,
+    norm_home_away_diff = P_home_norm - P_away_norm
+  )
+
+
+```
+
+```{r}
+binned_filtered2 <- filtered_data2 %>%
+  mutate(bin = cut(home_away_diff, bins, include.lowest = TRUE)) %>%
+  group_by(bin) %>%
+  reframe(
+    total_games = n(),  # Total games in each bin
+    draw_games = sum(result == "X", na.rm = TRUE),  # Number of draw games in each bin
+    estimated_prob_draw = draw_games / total_games,  # Probability of draw
+    bin_lower = as.numeric(gsub("\\(|\\[|,.*", "", unique(bin))),  # Lower bin boundary
+    bin_upper = as.numeric(gsub(".*,|\\]|\\)", "", unique(bin))),  # Upper bin boundary
+    bin_center = (bin_lower + bin_upper) / 2  # Calculate bin center
+  )
+```
+
+```{r}
+ggplot() +
+  # Raw probabilities as blue points
+  geom_point(data = filtered_data2, aes(x = norm_home_away_diff, y = P_draw), alpha = 0.2, color = "blue") +
+  
+  # Trend line using LOESS
+  geom_smooth(data = filtered_data2, aes(x = norm_home_away_diff, y = P_draw), method = "loess", color = "orange", se = FALSE) +
+  
+  # Binned outcomes as red points
+  geom_point(data = binned_filtered2, aes(x = bin_center, y = estimated_prob_draw), color = "red", size = 2) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.10), limits = c(0, 1)) +
+  labs(
+    title = "(a) Trend and Odds with filtered data according to case 2 (all data)",
+    x = "P(home win) - P(away win) (Normalized)",
+    y = "P(draw) (Normalized)",
+    color = ""
+  ) +
+  theme_minimal()
+```
+
+
+
+```{r}
+
+penalty_end_of_the_game2 <- match_data_with_90_flag %>%
+  arrange(fixture_id, total_minute) %>%  
+  group_by(fixture_id) %>%
+  mutate(
+    prev_penalty_home = lag(Penalties...home, default = 0),
+    prev_penalty_away = lag(Penalties...away, default = 0)
+  ) %>%
+  filter(
+    total_minute >= 80 &  
+    (
+      (Penalties...home > prev_penalty_home) | 
+      (Penalties...away > prev_penalty_away)    
+    )
+  ) %>%
+  ungroup() %>%
+  pull(fixture_id) %>%
+  unique()
+
+```
+
+```{r}
+print(penalty_end_of_the_game2)
+length(penalty_end_of_the_game2)
+```
+
+```{r}
+match_details <- match_data_with_90_flag %>%
+  filter(fixture_id == 19155123) %>% 
+  select(fixture_id, `Penalties...away`, `Penalties...home`, total_minute, X1, X2, X) %>%
+  distinct()
+
+
+print(match_details)
+```
+
+
+```{r}
+final_filtered_data3 <- match_data_with_90_flag %>%
+  filter(!fixture_id %in% early_red_cards & !fixture_id %in% matches_with_state_change & !fixture_id %in% penalty_end_of_the_game2)
+```
+
+
+```{r}
+earleast_timestamp_filtered3 <- final_filtered_data3 %>%
+  group_by(fixture_id, halftime) %>%
+  filter(current_time == min(current_time)) %>% 
+  ungroup()
+```
+
+```{r}
+earleast_filtered_data3 <- earleast_timestamp_filtered3 %>%
+  mutate(
+    P_home = 1 / `X1`,
+    P_draw = 1 / X,
+    P_away = 1 / `X2`
+  )
+
+earleast_filtered_data3 <- earleast_filtered_data3 %>%
+  mutate(
+    total_prob = P_home + P_draw + P_away,
+    P_home_norm = P_home / total_prob,
+    P_draw_norm = P_draw / total_prob,
+    P_away_norm = P_away / total_prob
+  )
+
+
+earleast_filtered_data3 <- earleast_filtered_data3 %>%
+  mutate(
+    home_away_diff = P_home - P_away,
+    norm_home_away_diff = P_home_norm - P_away_norm
+  )
+
+```
+
+
+
+```{r}
+binned_earleast_filtered3 <- earleast_filtered_data3 %>%
+  mutate(bin = cut(home_away_diff, bins, include.lowest = TRUE)) %>%
+  group_by(bin) %>%
+  reframe(
+    total_games = n(),  
+    draw_games = sum(result == "X", na.rm = TRUE),  
+    estimated_prob_draw = draw_games / total_games,  
+    bin_lower = as.numeric(gsub("\\(|\\[|,.*", "", unique(bin))),  
+    bin_upper = as.numeric(gsub(".*,|\\]|\\)", "", unique(bin))), 
+    bin_center = (bin_lower + bin_upper) / 2 
+  )
+```
+
+```{r}
+ggplot() +
+  # Raw probabilities as blue points
+  geom_point(data = earleast_filtered_data3, aes(x = norm_home_away_diff, y = P_draw), alpha = 0.2, color = "blue") +
+  
+  # Trend line using LOESS
+  geom_smooth(data = earleast_filtered_data3, aes(x = norm_home_away_diff, y = P_draw), method = "loess", color = "orange", se = FALSE) +
+  
+  # Binned outcomes as red points
+  geom_point(data = binned_earleast_filtered3, aes(x = bin_center, y = estimated_prob_draw), color = "red", size = 2) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.10), limits = c(0, 1)) +
+  labs(
+    title = "(a) Trend and Odds with filtered data according to case 3 (earlest timestamp)",
+    x = "P(home win) - P(away win) (Normalized)",
+    y = "P(draw) (Normalized)",
+    color = ""
+  ) +
+  theme_minimal()
+```
+
+
+```{r}
+filtered_data3 <- final_filtered_data3 %>%
+  mutate(
+    P_home = 1 / `X1`,
+    P_draw = 1 / X,
+    P_away = 1 / `X2`
+  )
+
+filtered_data3 <- filtered_data3 %>%
+  mutate(
+    total_prob = P_home + P_draw + P_away,
+    P_home_norm = P_home / total_prob,
+    P_draw_norm = P_draw / total_prob,
+    P_away_norm = P_away / total_prob
+  )
+
+
+filtered_data3 <- filtered_data3 %>%
+  mutate(
+    home_away_diff = P_home - P_away,
+    norm_home_away_diff = P_home_norm - P_away_norm
+  )
+
+
+```
+
+```{r}
+binned_filtered3 <- filtered_data3 %>%
+  mutate(bin = cut(home_away_diff, bins, include.lowest = TRUE)) %>%
+  group_by(bin) %>%
+  reframe(
+    total_games = n(),  
+    draw_games = sum(result == "X", na.rm = TRUE),  
+    estimated_prob_draw = draw_games / total_games, 
+    bin_lower = as.numeric(gsub("\\(|\\[|,.*", "", unique(bin))),  
+    bin_upper = as.numeric(gsub(".*,|\\]|\\)", "", unique(bin))),  
+    bin_center = (bin_lower + bin_upper) / 2 
+  )
+```
+
+```{r}
+ggplot() +
+  # Raw probabilities as blue points
+  geom_point(data = filtered_data2, aes(x = norm_home_away_diff, y = P_draw), alpha = 0.2, color = "blue") +
+  
+  # Trend line using LOESS
+  geom_smooth(data = filtered_data2, aes(x = norm_home_away_diff, y = P_draw), method = "loess", color = "orange", se = FALSE) +
+  
+  # Binned outcomes as red points
+  geom_point(data = binned_filtered2, aes(x = bin_center, y = estimated_prob_draw), color = "red", size = 2) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.10), limits = c(0, 1)) +
+  labs(
+    title = "(a) Trend and Odds with filtered data according to case 3 (all data)",
+    x = "P(home win) - P(away win) (Normalized)",
+    y = "P(draw) (Normalized)",
+    color = ""
+  ) +
+  theme_minimal()
+```
+
+
+
+
+
+
+
+
+
+#QUESTION 3
+
+```{r}
+match_data_tree <- match_data_org %>%
+  filter(suspended == "False" & stopped == "False")
+```
+
+```{r}
+match_data_tree <- match_data_tree %>%
+  mutate(result = as.factor(result))
+```
+
+```{r}
+colSums(is.na(match_data_tree))
+```
+
+```{r}
+# Fill in missing values
+cleaned_data <- match_data_tree %>%
+  group_by(fixture_id) %>%
+  mutate(across(
+    where(is.numeric), # Only apply to numeric columns
+    ~ {
+      # 1. If all values are NA, fill with 0
+      if (all(is.na(.))) {
+        return(rep(0, length(.)))
+      }
+      
+      # 2. If there are NA values at the start, fill with 0
+      filled <- replace_na(.x, 0)
+      
+      # 3. Apply both forward and backward filling
+      filled <- zoo::na.locf(filled, na.rm = FALSE) # Forward fill
+      filled <- zoo::na.locf(filled, fromLast = TRUE, na.rm = FALSE) # Backward fill
+      
+      # 4. Fill remaining NA values at the end with the last non-NA value
+      filled <- replace_na(filled, last(filled[!is.na(filled)]))
+      
+      return(filled)
+    }
+  )) %>%
+  ungroup()
+
+
+head(cleaned_data)
+```
+
+```{r}
+colSums(is.na(cleaned_data))
+```
+
+
+```{r}
+unnecessary_cols <- c(
+  "fixture_id", "half_start_datetime", "match_start_datetime", 
+  "latest_bookmaker_update", "name", 
+  "current_time", "minute", "second", "suspended", "stopped", 
+  "ticking", "final_score", "Score.Change...away", 
+  "Score.Change...home"
+)
+
+```
+
+
+```{r}
+cleaned_data <- cleaned_data %>%
+  mutate(
+    total_minute = case_when(
+      halftime == "1st-half" ~ minute,                         
+      halftime == "2nd-half" ~ 45 + minute
+    )
+  )
+cleaned_data$result <- as.factor(cleaned_data$result)
+cleaned_data2 <- cleaned_data[, !(names(cleaned_data) %in% unnecessary_cols)]
+
+
+```
+
+```{r}
+cleaned_data2$halftime <- ifelse(cleaned_data2$halftime == "1st-half", 1, 
+                       ifelse(cleaned_data2$halftime == "2nd-half", 2, NA))
+
+
+cleaned_data2$current_state <- ifelse(cleaned_data2$current_state == "X" | cleaned_data2$current_state == "", 
+                                     0, 
+                                     cleaned_data2$current_state)
+
+cleaned_data2$result <- ifelse(cleaned_data2$result == "X", 0, cleaned_data2$result)
+```
+
+```{r}
+cleaned_data2$current_state <- as.numeric(cleaned_data2$current_state)
+cleaned_data2$result <- as.factor(cleaned_data2$result)
+```
+
+
+```{r}
+pca_data <- cleaned_data2[, !(names(cleaned_data2) %in% "result")]
+```
+
+```{r}
+pca <- prcomp(pca_data, center = TRUE, scale. = TRUE)
+```
+
+```{r}
+summary(pca)
+```
+
+```{r}
+loadings <- pca$rotation
+print(loadings)
+```
+
+```{r}
+top_features_pc1 <- sort(abs(loadings[, 1]), decreasing = TRUE)
+print(top_features_pc1)
+
+```
+
+```{r}
+top_features_pc2 <- sort(abs(loadings[, 2]), decreasing = TRUE)
+print(top_features_pc2)
+```
+
+```{r}
+library(corrplot)
+
+var <- get_pca_var(pca)
+cos2 <- var$cos2
+
+cos2_limited <- cos2[, 1:36]
+
+total_cos2 <- rowSums(cos2_limited)
+
+top_features <- names(sort(total_cos2, decreasing = TRUE)[1:10])
+
+cos2_top <- cos2_limited[top_features, ]
+
+corrplot(cos2_top, is.corr = FALSE, tl.cex = 0.8, title = "Top 10 Features by Cos2 (First 36 Dimensions)")
+
+
+```
+
+```{r}
+fviz_cos2(pca, choice = "var", axes = 1:37)
+```
+
+```{r}
+cum_var <- cumsum(pca$sdev^2) / sum(pca$sdev^2)
+num_components <- which(cum_var >= 0.90)[1]
+pca_scores <- as.data.frame(pca$x[, 1:num_components])
+```
+
+```{r}
+print(pca_scores)
+```
+
+```{r}
+pca_scores$result <- cleaned_data2$result
+```
+
+```{r}
+tree_model_pca <- rpart(
+  result ~ ., 
+  data = pca_scores, 
+  method = "class"
+)
+
+```
+
+```{r}
+fancyRpartPlot(tree_model_pca)
+```
+
+```{r}
+summary(tree_model_pca)
+```
+```{r}
+set.seed(123) 
+trainset_pca_index <- sample(1:nrow(pca_scores), 0.7 * nrow(pca_scores))
+trainset_pca <- pca_scores[trainset_pca_index, ]
+testset_pca <- pca_scores[-trainset_pca_index, ]
+
+tree_model_pca_train <- rpart(
+  result ~ ., 
+  data = trainset_pca, 
+  method = "class"
+)
+tree_model_pca_predictions <- predict(tree_model_pca_train, newdata = testset_pca, type = "class")
+```
+
+```{r}
+conf_matrix_pca <- confusionMatrix(tree_model_pca_predictions, testset_pca$result)
+print(conf_matrix_pca)
+```
+
+```{r}
+cv_for_pca <- train(
+  result ~ ., 
+  data = pca_scores, 
+  method = "rpart"
+)
+
+print(cv_for_pca)
+```
+
+```{r}
+grid_pca <- expand.grid(cp = seq(0.001, 0.02, by = 0.001))
+cv_model_pca_grid <- train(result ~ ., data = trainset_pca, method = "rpart", tuneGrid = grid_pca, trControl = trainControl(method = "cv", number = 10))
+print(cv_model_pca_grid)
+```
+
+```{r}
+tree_model_weighted_pca <- rpart(
+  result ~ ., 
+  data = trainset_pca,
+  method = "class",
+  parms = list(loss = matrix(c(0, 2, 2, 1, 0, 1, 1, 1, 0), nrow = 3)) # Adjust weights
+)
+
+tree_model_weighted_pca_predictions <- predict(tree_model_weighted_pca, newdata = testset_pca, type = "class")
+conf_matrix_weighted_pca <- confusionMatrix(tree_model_weighted_pca_predictions, testset_pca$result)
+print(conf_matrix_weighted_pca)
+fancyRpartPlot(tree_model_weighted_pca)
+```
+```{r}
+cv_model_weighted <- train(
+  result ~ ., 
+  data = trainset_pca, 
+  method = "rpart",
+  parms = list(loss = matrix(c(0, 2, 2, 1, 0, 1, 1, 1, 0), nrow = 3))
+)
+print(cv_model_weighted)
+```
+
+```{r}
+tree_model_pca2 <- rpart(
+  result ~ ., 
+  data = pca_scores, 
+  method = "class",
+  control = rpart.control(cp = 0, minsplit = 20, maxdepth = 5)
+)
+
+fancyRpartPlot(tree_model_pca2)
+
+cv_for_pca_2 <- train(
+  result ~ ., 
+  data = trainset_pca, 
+  method = "rpart",
+  control = rpart.control(cp = 0, minsplit = 20, maxdepth = 5)
+)
+
+print(cv_for_pca)
+```
+```{r}
+
+grid_pca_all <- expand.grid(
+  cp = seq(0.001, 0.02, by = 0.002),    
+  minsplit = c(10, 20, 30),             
+  maxdepth = c(5, 10, 15)              
+)
+
+
+train_control_pca <- trainControl(method = "cv", number = 10)  
+
+
+custom_rpart <- function(grid) {
+  rpart(
+    result ~ ., 
+    data = trainset_pca,
+    control = rpart.control(cp = grid$cp, minsplit = grid$minsplit, maxdepth = grid$maxdepth),
+    method = "class"
+  )
+}
+
+
+results <- lapply(1:nrow(grid_pca_all), function(i) {
+  model <- custom_rpart(grid_pca_all[i, ])
+  predictions <- predict(model, newdata = testset_pca, type = "class")
+  accuracy <- mean(predictions == testset_pca$result)
+  data.frame(grid_pca_all[i, ], Accuracy = accuracy)
+})
+
+
+results_df <- do.call(rbind, results)
+
+
+best_params <- results_df[which.max(results_df$Accuracy), ]
+print(best_params)
+
+```
+
+
+```{r}
+tree_model_pca_grid <- rpart(
+  result ~ ., 
+  data = trainset_pca, 
+  method = "class",
+  control = rpart.control(cp = 0.001, minsplit = 10, maxdepth = 15)
+)
+
+tree_model_gridsearch_pca_predictions <- predict(tree_model_pca_grid, newdata = testset_pca, type = "class")
+conf_matrix_gridsearch_pca <- confusionMatrix(tree_model_gridsearch_pca_predictions, testset_pca$result)
+print(conf_matrix_gridsearch_pca)
+
+```
+```{r}
+fancyRpartPlot(tree_model_pca_grid)
+```
+
+```{r}
+# ROC Curve Calculation
+roc_train <- roc(as.numeric(trainset_pca$result), predict(tree_model_pca_grid, trainset_pca, type = "prob")[, 2])
+roc_test <- roc(as.numeric(testset_pca$result), predict(tree_model_pca_grid, testset_pca, type = "prob")[, 2])
+
+
+roc_plot <- ggplot() +
+  geom_line(aes(x = 1 - roc_train$specificities, y = roc_train$sensitivities, color = "Train")) +
+  geom_line(aes(x = 1 - roc_test$specificities, y = roc_test$sensitivities, color = "Test")) +
+  labs(title = "ROC Curve", x = "1 - Specificity", y = "Sensitivity") +
+  scale_color_manual(values = c("Train" = "blue", "Test" = "red")) +
+  theme_minimal()
+
+print(roc_plot)
+```
+
+
+
+```{r}
+
+
+predicted_probs <- predict(tree_model_pca_grid, newdata = testset_pca, type = "prob")
+
+roc_curves <- list()
+
+
+classes_pca <- levels(testset_pca$result)
+
+
+for (class in classes_pca) {
+  roc_curves[[class]] <- roc(
+    testset_pca$result == class, 
+    predicted_probs[, class]     
+  )
+}
+
+
+auc_values <- sapply(roc_curves, auc)
+print(auc_values)  
+
+
+plot(
+  roc_curves[[classes_pca[1]]],
+  col = "red",
+  main = "Multi-Class ROC Curves (Tree Model PCA Grid)",
+  lwd = 2
+)
+
+
+for (class in classes_pca[-1]) {
+  lines(roc_curves[[class]], col = which(classes_pca == class) + 1, lwd = 2)
+}
+
+
+legend(
+  "bottomright",
+  legend = paste("Class", classes_pca),
+  col = 1:length(classes_pca),
+  lwd = 2
+)
+
+```
+
+```{r}
+tree_model_gridsearch_pca_predictions_train <- predict(tree_model_pca_grid, newdata = trainset_pca, type = "class")
+conf_matrix_gridsearch_pca_train <- confusionMatrix(tree_model_gridsearch_pca_predictions_train, trainset_pca$result)
+
+train_accuracy_pca <- conf_matrix_gridsearch_pca_train$overall["Accuracy"]
+test_accuracy_pca <- conf_matrix_gridsearch_pca$overall["Accuracy"]
+
+pca_data_to_check_overfitting <- data.frame(
+  Dataset = c("Train", "Test"),
+  Error = c(1 - train_accuracy_pca, 1 - test_accuracy_pca)
+)
+
+error_plot <- ggplot(pca_data_to_check_overfitting, aes(x = Dataset, y = Error, fill = Dataset)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Training vs Test Error", y = "Error Rate", x = "Dataset") +
+  theme_minimal()
+
+print(error_plot)
+
+print(pca_data_to_check_overfitting$Error)
+```
+
+
+
+```{r}
+unnecessary_cols2 <- c(
+  "fixture_id", "half_start_datetime", "match_start_datetime", 
+  "latest_bookmaker_update", "name", 
+  "current_time", "minute", "second", "suspended", "stopped", 
+  "ticking", "final_score", "Score.Change...away", 
+  "Score.Change...home"
+)
+
+```
+
+```{r}
+cleaned_data_necessary <- cleaned_data2[, !(names(cleaned_data2) %in% unnecessary_cols2)]
+```
+
+```{r}
+# Convert predictors and target to matrix and vector
+x <- as.matrix(cleaned_data_necessary[, !names(cleaned_data_necessary) %in% "result"])  # Exclude the target variable
+y <- as.numeric(cleaned_data_necessary$result)  # Target variable
+lasso <- cv.glmnet(x, y, alpha = 1)  # L1 regularization
+best_lambda <- lasso$lambda.min
+print(best_lambda)
+selected_features <- coef(lasso, s = "lambda.min")
+print(selected_features)
+```
+```{r}
+selected_features_stricter <- coef(lasso, s = lasso$lambda.1se)
+print(selected_features_stricter)
+```
+
+```{r}
+coeff_matrix <- as.matrix(selected_features_stricter)
+# Extract non-zero coefficients
+non_zero_features <- rownames(coeff_matrix)[coeff_matrix != 0]
+non_zero_features <- non_zero_features[-1]  
+
+# Print selected features
+print("Selected Features:")
+print(non_zero_features)
+```
+
+
+```{r}
+selected_data2 <- cleaned_data_necessary[, c(non_zero_features, "result")]
+```
+
+```{r}
+tree_model_selected_features <- rpart(
+  result ~ ., 
+  data = selected_data2, 
+  method = "class", 
+  control = rpart.control(cp = 0.001, minsplit = 10, maxdepth = 15)
+)
+
+rpart.plot(tree_model_selected_features)
+```
+
+```{r}
+set.seed(123) 
+trainset_index_lasso <- sample(1:nrow(selected_data2), 0.7 * nrow(selected_data2))
+trainset_lasso <- pca_scores[trainset_index_lasso, ]
+testset_lasso <- pca_scores[-trainset_index_lasso, ]
+
+tree_model_lasso_train <- rpart(
+  result ~ ., 
+  data = trainset_lasso, 
+  method = "class",
+  control = rpart.control(cp = 0.001, minsplit = 10, maxdepth = 15)
+)
+
+
+tree_model_lasso_predictions <- predict(tree_model_lasso_train, newdata = testset_lasso, type = "class")
+
+conf_matrix_lasso <- confusionMatrix(tree_model_lasso_predictions, testset_lasso$result)
+print(conf_matrix_lasso)
+```
+
+```{r}
+train_control_lasso <- trainControl(method = "cv", number = 10)
+grid_lasso <- expand.grid(cp = seq(0.001, 0.02, by = 0.002))
+cv_model_lasso <- train(
+  result ~ ., 
+  data = trainset_lasso, 
+  method = "rpart",
+  trControl = train_control_lasso,
+  tuneGrid = grid_lasso,
+  control = rpart.control(minsplit = 10, maxdepth = 15)  # Fixed control parameters
+)
+
+# Print the CV results
+print(cv_model_lasso)
+
+```
+
+
+
+```{r}
+unnecessary_cols3 <- c(
+  "fixture_id", "half_start_datetime", "match_start_datetime", 
+  "latest_bookmaker_update", "name", 
+  "current_time", "minute", "second", "suspended", "stopped", 
+  "ticking", "final_score"
+)
+
+```
+
+
+```{r}
+cleaned_data3 <- cleaned_data[, !(names(cleaned_data) %in% unnecessary_cols3)]
+```
+
+```{r}
+cleaned_data3$halftime <- ifelse(cleaned_data3$halftime == "1st-half", 1, 
+                       ifelse(cleaned_data3$halftime == "2nd-half", 2, NA))
+
+
+cleaned_data3$current_state <- ifelse(cleaned_data3$current_state == "X" | cleaned_data3$current_state == "", 
+                                     0, 
+                                     cleaned_data3$current_state)
+
+cleaned_data3$result <- ifelse(cleaned_data3$result == "X", 0, cleaned_data3$result)
+```
+
+```{r}
+cleaned_data3$current_state <- as.factor(cleaned_data3$current_state)
+cleaned_data3$result <- as.factor(cleaned_data3$result)
+```
+
+
+```{r}
+tree_model_full <- rpart(
+  result ~ ., 
+  data = cleaned_data3, 
+  method = "class", 
+  control = rpart.control(cp = 0.001, minsplit = 10,maxdepth = 15)
+)
+
+
+# Extract feature importance
+feature_importance <- tree_model_full$variable.importance
+
+
+sorted_importance <- sort(feature_importance, decreasing = TRUE)
+
+print(sorted_importance)
+
+library(ggplot2)
+
+importance_df <- data.frame(
+  Feature = names(sorted_importance),
+  Importance = sorted_importance
+)
+
+ggplot(importance_df, aes(x = reorder(Feature, Importance), y = Importance)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +  
+  labs(title = "Feature Importance", x = "Features", y = "Importance") +
+  theme_minimal()
+
+```
+```{r}
+rpart.plot(tree_model_full)
+```
+
+
+
+```{r}
+fulldecisiontree_varimp <- varImp(tree_model_full)
+print(fulldecisiontree_varimp)
+```
+
+
+```{r}
+
+set.seed(123)
+train_index <- createDataPartition(cleaned_data3$result, p = 0.7, list = FALSE)
+train_data <- cleaned_data3[train_index, ]
+test_data <- cleaned_data3[-train_index, ]
+
+```
+
+
+```{r}
+tree_model_train <- rpart(
+  result ~ ., 
+  data = train_data, 
+  method = "class", 
+  control = rpart.control(cp = 0.001, minsplit = 10,maxdepth = 15)
+)
+
+rpart.plot(tree_model_train)
+```
+
+```{r}
+predictions <- predict(tree_model_train, newdata = test_data, type = "class")
+```
+
+```{r}
+conf_matrix <- confusionMatrix(predictions, test_data$result)
+print(conf_matrix)
+```
+```{r}
+confusionMatrix(predictions, test_data$result)$byClass
+```
+
+```{r}
+selected_features_decisiontree <- varImp(tree_model_train)
+print(selected_features_decisiontree)
+```
+
+```{r}
+important_features_decisiontree <- rownames(selected_features_decisiontree[selected_features_decisiontree$Overall > 0, , drop = FALSE])
+print(important_features_decisiontree)
+```
+
+
+```{r}
+train_data_selected <- train_data[, c(important_features_decisiontree,"result")]
+test_data_selected <- test_data[, c(important_features_decisiontree,"result")]
+```
+
+```{r}
+tree_model_train_refined <- rpart(
+  result ~ ., 
+  data = train_data_selected, 
+  method = "class", 
+  control = rpart.control(cp = 0.001, minsplit = 10,maxdepth = 15)
+)
+
+rpart.plot(tree_model_train_refined)
+```
+```{r}
+predictions2 <- predict(tree_model_train_refined, newdata = test_data_selected, type = "class")
+```
+
+```{r}
+conf_matrix2 <- confusionMatrix(predictions2, test_data_selected$result)
+print(conf_matrix2)
+```
+```{r}
+predicted_probs2 <- predict(tree_model_train_refined, newdata = test_data_selected, type = "prob")
+
+roc_curves2 <- list()
+
+
+classes_selected <- levels(test_data_selected$result)
+
+
+for (class in classes_selected) {
+  roc_curves2[[class]] <- roc(
+    test_data_selected$result == class, 
+    predicted_probs2[, class]     
+  )
+}
+
+
+auc_values2 <- sapply(roc_curves2, auc)
+print(auc_values2)  
+
+
+plot(
+  roc_curves2[[classes_selected[1]]],
+  col = "red",
+  main = "Multi-Class ROC Curves (Tree Model Selected Features)",
+  lwd = 2
+)
+
+
+for (class in classes_selected[-1]) {
+  lines(roc_curves2[[class]], col = which(classes_selected == class) + 1, lwd = 2)
+}
+
+
+legend(
+  "bottomright",
+  legend = paste("Class", classes_selected),
+  col = 1:length(classes_selected),
+  lwd = 2
+)
+
+```
+
+```{r}
+train_control <- trainControl(method = "cv", number = 10)
+cv_model <- train(result ~ ., data = train_data_selected, method = "rpart", trControl = train_control)
+print(cv_model)
+```
+
+
+train_data_selected$result <- factor(make.names(train_data_selected$result))
+test_data_selected$result <- factor(make.names(test_data_selected$result))
+
+
+
+```{r}
+# Define the grid for tuning parameters
+grid_best <- expand.grid(
+  cp = seq(0.001, 0.02, by = 0.002),    # Complexity parameter
+  minsplit = seq(5, 50, by = 10),             # Minimum number of observations to split
+  maxdepth = seq(5, 20, by = 5)               # Maximum depth of the tree
+)
+
+# Set up train control for cross-validation
+train_control_best <- trainControl(
+  method = "cv",        # Cross-validation
+  number = 10,          # 10-fold CV
+  verboseIter = TRUE,   # Display progress
+  classProbs = TRUE     # Use class probabilities for evaluation
+)
+
+custom_rpart_best <- function(grid) {
+  rpart(
+    result ~ ., 
+    data = train_data_selected,
+    control = rpart.control(cp = grid$cp, minsplit = grid$minsplit, maxdepth = grid$maxdepth),
+    method = "class"
+  )
+}
+
+results_best <- lapply(1:nrow(grid_best), function(i) {
+  model <- custom_rpart_best(grid_best[i, ])
+  predictions <- predict(model, newdata = test_data_selected, type = "class")
+  accuracy <- mean(predictions == test_data_selected$result)
+  data.frame(grid_best[i, ], Accuracy = accuracy)
+})
+
+
+results_df_best <- do.call(rbind, results_best)
+
+
+best_params2 <- results_df_best[which.max(results_df_best$Accuracy), ]
+print(best_params2)
+
+```
+
+
+```{r}
+tree <- rpart(result ~ ., data = train_data_selected, method = "class", control = rpart.control(cp = 0))
+
+print(tree$cptable)
+
+optimal_cp <- tree$cptable[which.min(tree$cptable[, "xerror"]), "CP"]
+
+pruned_tree <- prune(tree, cp = optimal_cp)
+
+rpart.plot(pruned_tree)
+```
+
+
+```{r}
+tree_model_optimalcp <- rpart(
+  result ~ ., 
+  data = train_data_selected, 
+  method = "class", 
+  control = rpart.control(cp=optimal_cp)
+)
+rpart.plot(tree_model_optimalcp)
+```
+
+
+```{r}
+predictions3 <- predict(tree_model_optimalcp, newdata = test_data_selected, type = "class")
+conf_matrix3 <- confusionMatrix(predictions3, test_data_selected$result)
+print(conf_matrix3)
+```
+```{r}
+
+cv_control2 <- trainControl(method = "cv", number = 10) 
+
+
+tune_grid <- expand.grid(cp = optimal_cp)
+
+
+cv_model2 <- train(
+  result ~ ., 
+  data = train_data_selected, 
+  method = "rpart", 
+  trControl = cv_control2, 
+  tuneGrid = tune_grid
+)
+
+
+print(cv_model2)
+
+final_model <- cv_model2$finalModel
+rpart.plot(final_model)
+```
+
+```{r}
+
+train_pred <- predict(tree_model_optimalcp, newdata = train_data_selected, type = "class")
+train_accuracy <- mean(train_pred == train_data_selected$result)
+
+
+test_pred <- predict(tree_model_optimalcp, test_data_selected, type = "class")
+test_accuracy <- mean(test_pred == test_data_selected$result)
+
+
+train_error <- 1 - train_accuracy
+test_error <- 1 - test_accuracy
+
+
+cat("Training Error:", train_error, "\n")
+cat("Test Error:", test_error, "\n")
+```
+
+
+
+```{r}
+predicted_probs <- predict(tree_model_optimalcp, newdata = test_data_selected, type = "prob")
+```
+
+
+```{r}
+
+roc_curves2 <- list()
+
+# Loop through each class and compute the ROC curve
+classes <- levels(test_data_selected$result)
+for (class in classes) {
+  roc_curves2[[class]] <- roc(
+    test_data_selected$result == class,  # One-vs-All
+    predicted_probs[, as.numeric(class) + 1]  
+  )
+}
+
+
+sapply(roc_curves2, auc)
+```
+```{r}
+
+plot(
+  roc_curves2[[classes[1]]],
+  col = "red",
+  main = "Multi-Class ROC Curves",
+  lwd = 2
+)
+
+
+for (class in classes[-1]) {
+  lines(roc_curves2[[class]], col = as.numeric(class) + 1, lwd = 2)
+}
+
+
+legend(
+  "bottomright",
+  legend = paste("Class", classes),
+  col = 1:length(classes),
+  lwd = 2
+)
+```
+
+
+
+
+
+```{r}
+
+train_sizes <- seq(0.1, 1, by = 0.1)  
+results_learning <- data.frame(TrainSize = numeric(), Accuracy = numeric()) 
+
+
+for (size in train_sizes) {
+  
+  subset_data <- train_data_selected[1:floor(size * nrow(train_data_selected)), ]
+  
+  
+  model <- train(
+    result ~ .,
+    data = subset_data,
+    method = "rpart",
+    trControl = trainControl(method = "cv", number = 10), # 10 katmanlı CV
+    tuneGrid = tune_grid
+  )
+  
+  
+  accuracy <- mean(model$resample$Accuracy)
+  results_learning <- rbind(results_learning, data.frame(TrainSize = size * 100, Accuracy = accuracy))
+}
+
+
+ggplot(results_learning, aes(x = TrainSize, y = Accuracy)) +
+  geom_line() +
+  geom_point() +
+  theme_minimal() +
+  labs(
+    title = "Learning Curve",
+    x = "Training Set Size (%)",
+    y = "Cross-Validated Accuracy"
+  )
+
+```
+
+```{r}
+
+train_sizes <- seq(0.1, 1, by = 0.1)  
+results_learning <- data.frame(TrainSize = numeric(), Accuracy = numeric(), Set = character())  
+
+
+for (size in train_sizes) {
+
+  subset_data <- train_data_selected[1:floor(size * nrow(train_data_selected)), ]
+  
+
+  model <- train(
+    result ~ .,
+    data = subset_data,
+    method = "rpart",
+    trControl = trainControl(method = "cv", number = 10),
+    tuneGrid = tune_grid
+  )
+  
+
+  train_accuracy <- mean(predict(model, subset_data) == subset_data$result)
+  results_learning <- rbind(
+    results_learning, 
+    data.frame(TrainSize = size * 100, Accuracy = train_accuracy, Set = "Training")
+  )
+  
+
+  validation_accuracy <- mean(model$resample$Accuracy)
+  results_learning <- rbind(
+    results_learning, 
+    data.frame(TrainSize = size * 100, Accuracy = validation_accuracy, Set = "Validation")
+  )
+}
+
+
+ggplot(results_learning, aes(x = TrainSize, y = Accuracy, color = Set, group = Set)) +
+  geom_line() +
+  geom_point() +
+  theme_minimal() +
+  labs(
+    title = "Learning Curve: Training vs Validation",
+    x = "Training Set Size (%)",
+    y = "Accuracy",
+    color = "Set"
+  )
+
+```
+
+```{r}
+
+results_learning2 <- data.frame(TrainSize = numeric(), Accuracy = numeric(), Set = character())
+
+
+set.seed(123) 
+train_index2 <- createDataPartition(train_data_selected$result, p = 0.7, list = FALSE)
+train_data2 <- train_data_selected[train_index2, ]
+validation_data2 <- train_data_selected[-train_index2, ]
+
+
+for (size in train_sizes) {
+
+  subset_data2 <- train_data2[1:floor(size * nrow(train_data2)), ]
+  
+
+  model2 <- rpart(
+    result ~ ., 
+    data = subset_data2, 
+    method = "class", 
+    control = rpart.control(cp = 0.001, minsplit = 10,maxdepth = 15) 
+  )
+  
+
+  train_pred2 <- predict(model2, subset_data2, type = "class")
+  train_accuracy2 <- mean(train_pred2 == subset_data2$result)
+  results_learning2 <- rbind(
+    results_learning2, 
+    data.frame(TrainSize = size * 100, Accuracy = train_accuracy2, Set = "Training")
+  )
+  
+
+  val_pred2 <- predict(model2, validation_data2, type = "class")
+  val_accuracy2 <- mean(val_pred2 == validation_data2$result)
+  results_learning2 <- rbind(
+    results_learning2, 
+    data.frame(TrainSize = size * 100, Accuracy = val_accuracy2, Set = "Validation")
+  )
+}
+
+
+ggplot(results_learning2, aes(x = TrainSize, y = Accuracy, color = Set, group = Set)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  theme_minimal() +
+  labs(
+    title = "Learning Curve: Training vs Validation (rpart Model)",
+    x = "Training Set Size (%)",
+    y = "Accuracy",
+    color = "Set"
+  )
+
+```
+
+
+```{r}
+library(xgboost)
+train_data_selected_boosting <- train_data_selected
+train_data_selected_boosting[] <- lapply(train_data_selected_boosting, function(x) {
+  if (is.factor(x)) {
+
+    return(as.numeric(as.factor(x)) - 1) 
+  }
+  return(x)  
+})
+
+
+target <- as.numeric(train_data_selected_boosting$result)
+features <- train_data_selected_boosting[, -which(names(train_data_selected_boosting) == "result")] 
+train_matrix <- xgb.DMatrix(data = as.matrix(features), label = target)
+
+params <- list(
+  objective = "multi:softmax",  
+  num_class = 3, 
+  eval_metric = "merror",
+  eta = 0.1, 
+  max_depth = 6,
+  nthread = 2
+)
+
+num_round <- 100
+model_gb <- xgb.train(params = params, data = train_matrix, nrounds = num_round)
+preds <- predict(model_gb, train_matrix)
+conf_matrix_boosting <- confusionMatrix(as.factor(preds), as.factor(target))
+print(conf_matrix_boosting)
+```
+```{r}
+# Extract feature importance
+importance_matrix <- xgb.importance(model = model_gb, feature_names = colnames(features))
+
+
+print(importance_matrix)
+
+
+xgb.plot.importance(importance_matrix, top_n = 20, measure = "Gain")
+
+```
+
+
+```{r}
+library(randomForest)
+randomforestmodel <- randomForest(result ~ ., data = cleaned_data_necessary, importance = TRUE)
+importance <- importance(randomforestmodel)
+print(importance)
+print(randomforestmodel)
+```
+```{r}
+varImpPlot(randomforestmodel, 
+           sort = TRUE,          
+           n.var = min(20, nrow(importance)), 
+           main = "Feature Importance in Random Forest") 
+```
+
+```{r}
+set.seed(123)
+train_index_randomforest <- createDataPartition(cleaned_data_necessary$result, p = 0.7, list = FALSE)
+train_data_randomforest <- cleaned_data_necessary[train_index, ]
+test_data_randomforest <- cleaned_data_necessary[-train_index, ]
+predictions_randomforest <- predict(randomforestmodel, newdata = test_data_randomforest)
+randomforestmodeltrained <- randomForest(result ~ ., data = train_data_randomforest, importance = TRUE)
+conf_matrix_randomforest <- confusionMatrix(predictions_randomforest, test_data_randomforest$result)
+print(conf_matrix_randomforest)
+accuracy_randomforest <- conf_matrix_randomforest$overall['Accuracy']
+print(paste("Accuracy: ", accuracy_randomforest))
+
+```
+
+```{r}
+predictions_randomforest_train <- predict(randomforestmodel, newdata = train_data_randomforest)
+```
+```{r}
+# Calculate Error Rates
+train_accuracy_rf <- mean(predictions_randomforest_train == train_data$result)
+test_accuracy_rf <- mean(predictions_randomforest == test_data$result)
+
+cat("Train Accuracy:", train_accuracy, "\n")
+cat("Test Accuracy:", test_accuracy, "\n")
+```
+
+```{r}
+
+
+cleaned_data_necessaryv2 <- cleaned_data3 %>%
+  mutate(
+    implied_prob_X1 = 1 / X1,
+    implied_prob_X2 = 1 / X2,
+    implied_prob_X = 1 / X
+  )
+
+
+set.seed(123)
+train_index_final <- createDataPartition(cleaned_data_necessaryv2$result, p = 0.7, list = FALSE)
+train_data_final <- cleaned_data_necessaryv2[train_index, ]
+test_data_final <- cleaned_data_necessaryv2[-train_index, ]
+
+tree_model_final <- rpart(
+  result ~ ., 
+  data = train_data_final, 
+  method = "class",
+  control = rpart.control(cp = 0.001, minsplit = 5, maxdepth = 15)
+)
+
+
+rpart.plot(tree_model_final, main = "Decision Tree for Match Results")
+
+
+predictions_prob_final <- predict(tree_model_final, test_data_final, type = "prob")
+predicted_probabilities_f <- as.data.frame(predictions_prob_final)
+
+
+
+test_results <- test_data_final %>%
+  select(implied_prob_X1, implied_prob_X2, implied_prob_X, result) %>%
+  bind_cols(predicted_probabilities_f)
+
+print("Test Results with Predicted and Implied Probabilities:")
+print(head(test_results))
+
+
+test_results <- test_results %>%
+  mutate(
+    deviation_X1 = abs(`0` - implied_prob_X1),
+    deviation_X2 = abs(`1` - implied_prob_X2),
+    deviation_X = abs(`2` - implied_prob_X)
+  )
+
+
+mean_deviation <- colMeans(test_results[, c("deviation_X1", "deviation_X2", "deviation_X")])
+print("Mean Deviations between Model Predictions and Implied Probabilities:")
+print(mean_deviation)
+
+```
+
+```{r}
+train_data_selected_f <- train_data_selected %>%
+  mutate(
+    implied_prob_X1 = 1 / X1,
+    implied_prob_X2 = 1 / X2,
+    implied_prob_X = 1 / X
+  )
+
+test_data_selected_f <- test_data_selected %>%
+  mutate(
+    implied_prob_X1 = 1 / X1,
+    implied_prob_X2 = 1 / X2,
+    implied_prob_X = 1 / X
+  )
+
+tree_model_optimalcp_f <- rpart(
+  result ~ ., 
+  data = train_data_selected_f, 
+  method = "class", 
+  control = rpart.control(cp=optimal_cp)
+)
+
+
+
+rpart.plot(tree_model_optimalcp_f, main = "Decision Tree for Match Results")
+
+
+predictions_prob_optimalcp_f <- predict(tree_model_optimalcp_f, test_data_selected_f, type = "prob")
+predicted_probabilities_optimalcp_f <- as.data.frame(predictions_prob_optimalcp_f)
+
+
+
+test_results_optimalcp_f <- test_data_selected_f %>%
+  select(implied_prob_X1, implied_prob_X2, implied_prob_X, result) %>%
+  bind_cols(predicted_probabilities_optimalcp_f)
+
+print("Test Results with Predicted and Implied Probabilities:")
+print(head(test_results_optimalcp_f))
+
+
+test_results_optimalcp_f <- test_results_optimalcp_f %>%
+  mutate(
+    deviation_X1 = abs(`0` - implied_prob_X1),
+    deviation_X2 = abs(`1` - implied_prob_X2),
+    deviation_X = abs(`2` - implied_prob_X)
+  )
+
+
+mean_deviation_optimalcp_f <- colMeans(test_results_optimalcp_f[, c("deviation_X1", "deviation_X2", "deviation_X")])
+print("Mean Deviations between Model Predictions and Implied Probabilities:")
+print(mean_deviation_optimalcp_f)
+```
+```{r}
+# Identify the matches with the highest deviations for each outcome
+highest_deviation_matches <- test_results %>%
+  mutate(row_id = row_number()) %>% # Add a row identifier
+  summarise(
+    highest_X1 = row_id[which.max(deviation_X1)],
+    highest_X2 = row_id[which.max(deviation_X2)],
+    highest_X = row_id[which.max(deviation_X)]
+  )
+
+
+highest_deviation_data <- test_results %>%
+  filter(row_number() %in% c(
+    highest_deviation_matches$highest_X1,
+    highest_deviation_matches$highest_X2,
+    highest_deviation_matches$highest_X
+  ))
+
+
+print("Matches with the highest deviations:")
+print(highest_deviation_data)
+
+
+highest_deviation_features <- cleaned_data_necessaryv2 %>%
+  filter(row_number() %in% c(
+    highest_deviation_matches$highest_X1,
+    highest_deviation_matches$highest_X2,
+    highest_deviation_matches$highest_X
+  ))
+
+# Compare the features to the actual results and implied probabilities
+print("Features of the matches with the highest deviations:")
+print(highest_deviation_features)
+
+
+feature_analysis <- highest_deviation_features %>%
+  select(-implied_prob_X1, -implied_prob_X2, -implied_prob_X, -result) %>%
+  summarise(across(everything(), mean, na.rm = TRUE))
+
+print("Summary of features contributing to high deviations:")
+print(feature_analysis)
+```
+```{r}
+
+library(purrr)
+
+
+deviation_correlation <- highest_deviation_features %>%
+  select(where(is.numeric)) %>%
+  summarise(
+    corr_X1 = map_dbl(., ~ {
+      if (sd(.x, na.rm = TRUE) == 0) return(NA) # Skip constant features
+      cor(.x, highest_deviation_data$deviation_X1, use = "complete.obs")
+    }),
+    corr_X2 = map_dbl(., ~ {
+      if (sd(.x, na.rm = TRUE) == 0) return(NA) # Skip constant features
+      cor(.x, highest_deviation_data$deviation_X2, use = "complete.obs")
+    }),
+    corr_X = map_dbl(., ~ {
+      if (sd(.x, na.rm = TRUE) == 0) return(NA) # Skip constant features
+      cor(.x, highest_deviation_data$deviation_X, use = "complete.obs")
+    })
+  )
+
+
+deviation_correlation <- highest_deviation_features %>%
+  select(where(is.numeric)) %>%
+  reframe(
+    Feature = names(.),
+    corr_X1 = map_dbl(., ~ {
+      if (sd(.x, na.rm = TRUE) == 0) return(NA) # Skip constant features
+      cor(.x, highest_deviation_data$deviation_X1, use = "complete.obs")
+    }),
+    corr_X2 = map_dbl(., ~ {
+      if (sd(.x, na.rm = TRUE) == 0) return(NA) # Skip constant features
+      cor(.x, highest_deviation_data$deviation_X2, use = "complete.obs")
+    }),
+    corr_X = map_dbl(., ~ {
+      if (sd(.x, na.rm = TRUE) == 0) return(NA) # Skip constant features
+      cor(.x, highest_deviation_data$deviation_X, use = "complete.obs")
+    })
+  )
+
+
+most_influential_features <- deviation_correlation %>%
+  summarise(
+    Deviation = c("X1", "X2", "X"),
+    Feature = Feature[apply(select(., starts_with("corr_")), 2, which.max)],
+    Correlation = apply(select(., starts_with("corr_")), 2, max, na.rm = TRUE)
+  )
+
+print("Most influential features for each deviation type:")
+print(most_influential_features)
+
+```
+
+
